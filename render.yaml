@@ -1,0 +1,30 @@
+# Render Blueprint. Push this repo to GitHub, then New > Blueprint on render.com.
+#
+# Free web services sleep after idle HTTP traffic. Use a keep-alive ping on
+# /status if you need the scanner to run continuously, or use a paid instance.
+#
+# Set the secret env vars in the Render dashboard (do not commit them).
+
+services:
+  - type: web
+    name: battoujutsu-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /status
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: SCAN_INTERVAL_SECONDS
+        value: "180"
+      - key: TWELVE_DATA_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
