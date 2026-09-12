@@ -20,10 +20,16 @@ PAIRS: tuple[str, ...] = (
     "ETHUSDT",
 )
 
-# Twelve Data forex symbols use a slash.
+# Twelve Data symbols use a slash; crypto symbols use USD on this endpoint.
 TWELVE_DATA_SYMBOLS: dict[str, str] = {
     pair: f"{pair[:3]}/{pair[3:]}" for pair in PAIRS
 }
+TWELVE_DATA_SYMBOLS.update(
+    {
+        "BTCUSDT": "BTC/USD",
+        "ETHUSDT": "ETH/USD",
+    }
+)
 
 TIMEFRAMES: dict[str, str] = {
     "D1": "1day",
