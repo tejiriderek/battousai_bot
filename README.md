@@ -50,7 +50,7 @@ TELEGRAM_CHAT_ID=123456789
 ```
 
 Twelve Data key: [twelvedata.com/apikey](https://twelvedata.com/apikey).  
-Forex time series credits are consumed per pair per timeframe. The client spaces requests and backs off on HTTP 429.
+Forex time series credits are consumed per pair per timeframe. The client spaces requests by 15 seconds. It retries network and server errors, but stops immediately on rate-limit or credit-limit responses so repeated failures do not consume more quota.
 
 Run:
 

@@ -62,11 +62,10 @@ class TwelveDataClient:
                 continue
 
             if response.status_code == 429:
-                wait = _retry_after(response, attempt)
-                log.warning("Twelve Data rate limited; backing off %.1fs", wait)
-                time.sleep(wait)
-                last_error = DataServiceError("HTTP 429")
-                continue
+                retry_after = _retry_after(response, attempt)
+                raise DataServiceError(
+                    f"HTTP 429; retry after {retry_after:.0f}s"
+                )
 
             if response.status_code >= 500:
                 wait = _backoff(attempt)
@@ -87,11 +86,7 @@ class TwelveDataClient:
             if response.status_code != 200 or status == "error":
                 combined = f"{payload.get('message', response.text)}"
                 if "limit" in message or "credits" in message or response.status_code == 429:
-                    wait = _backoff(attempt, floor=15.0)
-                    log.warning("Twelve Data credit/limit error (%s); wait %.1fs", combined, wait)
-                    time.sleep(wait)
-                    last_error = DataServiceError(combined)
-                    continue
+                    raise DataServiceError(f"Twelve Data credit/limit error: {combined}")
                 raise DataServiceError(combined or f"HTTP {response.status_code}")
 
             return payload
