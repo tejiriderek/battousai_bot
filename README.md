@@ -1,6 +1,6 @@
 # Battoujutsu Forex Scanner
 
-Production scanner for GBPUSD, EURAUD, and NZDCAD on Daily and H4. It waits for a full sequence before alerting:
+Production scanner for GBPUSD, EURAUD, NZDCAD, BTCUSDT, and ETHUSDT on Daily and H4. It waits for a full sequence before alerting:
 
 Daily rejection or breakout → aligned H4 breakout → exact retest of the broken A/V level (RBS/SBR) → continuation close.
 
@@ -72,7 +72,7 @@ Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
    - `TWELVE_DATA_API_KEY`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
-   - `SCAN_INTERVAL_SECONDS=900` (15 minutes; keeps the default 6-request scan under 800 daily credits)
+   - `SCAN_INTERVAL_SECONDS=1200` (20 minutes; keeps the default 10-request scan under 800 daily credits)
    - `LOG_LEVEL=INFO`
 4. Deploy. Render injects `PORT`; `main.py` binds it automatically.
 5. Confirm `https://<your-service>.onrender.com/status` returns `scanner_running: true`.

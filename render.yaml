@@ -21,7 +21,7 @@ services:
       - key: LOG_LEVEL
         value: INFO
       - key: SCAN_INTERVAL_SECONDS
-        value: "900"
+        value: "1200"
       - key: TWELVE_DATA_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
