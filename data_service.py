@@ -177,7 +177,7 @@ def drop_incomplete_candle(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 
 
 def _backoff(attempt: int, floor: float = 0.5) -> float:
-    return max(floor, 0.5 * (2**attempt))
+    return min(60.0, floor * (2**attempt))
 
 
 def _retry_after(response: requests.Response, attempt: int) -> float:
