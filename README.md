@@ -72,7 +72,7 @@ Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
    - `TWELVE_DATA_API_KEY`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
-   - `SCAN_INTERVAL_SECONDS=1800` (30 minutes; keeps the default 6-request scan under 800 daily credits)
+   - `SCAN_INTERVAL_SECONDS=900` (15 minutes; keeps the default 6-request scan under 800 daily credits)
    - `LOG_LEVEL=INFO`
 4. Deploy. Render injects `PORT`; `main.py` binds it automatically.
 5. Confirm `https://<your-service>.onrender.com/status` returns `scanner_running: true`.
