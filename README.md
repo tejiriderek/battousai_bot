@@ -1,6 +1,6 @@
 # Battoujutsu Forex Scanner
 
-Production scanner for seven major FX pairs on Daily and H4. It waits for a full sequence before alerting:
+Production scanner for EURUSD, GBPUSD, USDJPY, EURAUD, NZDCAD, BTCUSDT, and ETHUSDT on Daily and H4. It waits for a full sequence before alerting:
 
 Daily rejection or breakout → aligned H4 breakout → exact retest of the broken A/V level (RBS/SBR) → continuation close.
 

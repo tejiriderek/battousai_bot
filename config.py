@@ -14,10 +14,10 @@ PAIRS: tuple[str, ...] = (
     "EURUSD",
     "GBPUSD",
     "USDJPY",
-    "USDCHF",
-    "USDCAD",
-    "AUDUSD",
-    "NZDUSD",
+    "EURAUD",
+    "NZDCAD",
+    "BTCUSDT",
+    "ETHUSDT",
 )
 
 # Twelve Data forex symbols use a slash.
