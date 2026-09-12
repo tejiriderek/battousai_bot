@@ -45,12 +45,13 @@ Edit `.env`:
 
 ```
 TWELVE_DATA_API_KEY=your_twelve_data_key
+TWELVE_DATA_API_KEY_SECOND=your_second_twelve_data_key
 TELEGRAM_BOT_TOKEN=123456:ABC...
 TELEGRAM_CHAT_ID=123456789
 ```
 
 Twelve Data key: [twelvedata.com/apikey](https://twelvedata.com/apikey).  
-Forex time series credits are consumed per pair per timeframe. The client spaces requests by 15 seconds. It retries network and server errors, but stops immediately on rate-limit or credit-limit responses so repeated failures do not consume more quota.
+Forex time series credits are consumed per pair per timeframe. The client spaces requests by 15 seconds. Configure a second key in `TWELVE_DATA_API_KEY_SECOND` for failover; each key is cooled down independently after a rate-limit or daily-credit response and becomes eligible again after its limit window or daily reset.
 
 Run:
 
@@ -70,6 +71,7 @@ Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
    - Health check path: `/status`
 3. In Environment, set:
    - `TWELVE_DATA_API_KEY`
+   - `TWELVE_DATA_API_KEY_SECOND`
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
    - `SCAN_INTERVAL_SECONDS=1800` (30 minutes; keeps the default 14-request scan under 800 daily credits)

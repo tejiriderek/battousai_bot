@@ -46,6 +46,10 @@ API_MAX_RETRIES = 5
 OHLC_GAP_TOLERANCE = 2.5
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+TWELVE_DATA_API_KEY_SECOND = os.getenv("TWELVE_DATA_API_KEY_SECOND", "").strip()
+TWELVE_DATA_API_KEYS = tuple(
+    key for key in (TWELVE_DATA_API_KEY, TWELVE_DATA_API_KEY_SECOND) if key
+)
 TWELVE_DATA_BASE_URL = os.getenv(
     "TWELVE_DATA_BASE_URL", "https://api.twelvedata.com"
 ).rstrip("/")

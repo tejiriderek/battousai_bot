@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -24,6 +25,8 @@ class TwelveDataClient:
     def __init__(self) -> None:
         self._session = requests.Session()
         self._last_request_at = 0.0
+        self._active_key_index = 0
+        self._key_unavailable_until = [0.0] * len(config.TWELVE_DATA_API_KEYS)
 
     def fetch_ohlc(self, pair: str, timeframe: str) -> pd.DataFrame:
         symbol = config.TWELVE_DATA_SYMBOLS[pair]
@@ -32,7 +35,6 @@ class TwelveDataClient:
             "symbol": symbol,
             "interval": interval,
             "outputsize": config.LOOKBACK_CANDLES,
-            "apikey": config.TWELVE_DATA_API_KEY,
             "format": "JSON",
             "timezone": "UTC",
         }
@@ -42,17 +44,21 @@ class TwelveDataClient:
         return drop_incomplete_candle(frame, timeframe)
 
     def _request(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        if not config.TWELVE_DATA_API_KEY:
+        if not config.TWELVE_DATA_API_KEYS:
             raise DataServiceError("TWELVE_DATA_API_KEY is not set")
 
         url = f"{config.TWELVE_DATA_BASE_URL}{path}"
         last_error: Exception | None = None
 
         for attempt in range(config.API_MAX_RETRIES):
+            key_index = self._next_available_key_index()
+            if key_index is None:
+                raise DataServiceError("all Twelve Data API keys are rate limited")
+            request_params = {**params, "apikey": config.TWELVE_DATA_API_KEYS[key_index]}
             self._throttle()
             try:
                 response = self._session.get(
-                    url, params=params, timeout=config.API_TIMEOUT_SECONDS
+                    url, params=request_params, timeout=config.API_TIMEOUT_SECONDS
                 )
             except requests.RequestException as exc:
                 last_error = exc
@@ -64,9 +70,14 @@ class TwelveDataClient:
             if response.status_code == 429:
                 retry_after = _retry_after(response, attempt)
                 detail = response.text.strip()
-                raise DataServiceError(
-                    f"HTTP 429; retry after {retry_after:.0f}s; detail: {detail}"
+                self._disable_key(key_index, retry_after, detail)
+                log.warning(
+                    "Twelve Data key %d rate limited; switching keys; detail: %s",
+                    key_index + 1,
+                    detail,
                 )
+                last_error = DataServiceError(f"HTTP 429; detail: {detail}")
+                continue
 
             if response.status_code >= 500:
                 wait = _backoff(attempt)
@@ -87,12 +98,40 @@ class TwelveDataClient:
             if response.status_code != 200 or status == "error":
                 combined = f"{payload.get('message', response.text)}"
                 if "limit" in message or "credits" in message or response.status_code == 429:
-                    raise DataServiceError(f"Twelve Data credit/limit error: {combined}")
+                    self._disable_key(key_index, _retry_after(response, attempt), combined)
+                    log.warning(
+                        "Twelve Data key %d credit-limited; switching keys; detail: %s",
+                        key_index + 1,
+                        combined,
+                    )
+                    last_error = DataServiceError(
+                        f"Twelve Data credit/limit error: {combined}"
+                    )
+                    continue
                 raise DataServiceError(combined or f"HTTP {response.status_code}")
 
+            self._active_key_index = key_index
             return payload
 
         raise DataServiceError(f"exhausted retries: {last_error}")
+
+    def _next_available_key_index(self) -> int | None:
+        now = time.time()
+        for offset in range(len(config.TWELVE_DATA_API_KEYS)):
+            index = (self._active_key_index + offset) % len(config.TWELVE_DATA_API_KEYS)
+            if self._key_unavailable_until[index] <= now:
+                return index
+        return None
+
+    def _disable_key(self, key_index: int, cooldown: float, detail: str) -> None:
+        message = detail.lower()
+        if "run out" in message or "daily" in message or "current limit" in message:
+            now = datetime.now(timezone.utc)
+            tomorrow = now.date() + timedelta(days=1)
+            reset_at = datetime.combine(tomorrow, datetime.min.time(), timezone.utc)
+            cooldown = max(cooldown, (reset_at - now).total_seconds())
+        self._key_unavailable_until[key_index] = time.time() + cooldown
+        self._active_key_index = (key_index + 1) % len(config.TWELVE_DATA_API_KEYS)
 
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_request_at
