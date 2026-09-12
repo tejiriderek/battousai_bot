@@ -70,6 +70,9 @@ def _scan_once() -> None:
                 )
         except DataServiceError as exc:
             log.warning("%s data error: %s", pair, exc)
+            if "HTTP 429" in str(exc) or "credit/limit error" in str(exc):
+                log.warning("Rate limit detected; stopping this scan cycle")
+                return
         except Exception:
             log.exception("Unhandled error scanning %s", pair)
 

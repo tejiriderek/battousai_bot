@@ -63,8 +63,9 @@ class TwelveDataClient:
 
             if response.status_code == 429:
                 retry_after = _retry_after(response, attempt)
+                detail = response.text.strip()
                 raise DataServiceError(
-                    f"HTTP 429; retry after {retry_after:.0f}s"
+                    f"HTTP 429; retry after {retry_after:.0f}s; detail: {detail}"
                 )
 
             if response.status_code >= 500:
