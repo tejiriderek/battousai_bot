@@ -17,7 +17,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Battoujutsu Forex Scanner", docs_url=None, redoc_url=None)
 
-    @app.get("/status")
+    @app.api_route("/status", methods=["GET", "HEAD"])
     def status() -> JSONResponse:
         try:
             snapshot = snapshot_provider()
