@@ -11,13 +11,9 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 PAIRS: tuple[str, ...] = (
-    "EURUSD",
     "GBPUSD",
-    "USDJPY",
-    "USDCHF",
-    "USDCAD",
-    "AUDUSD",
-    "NZDUSD",
+    "EURAUD",
+    "NZDCAD",
 )
 
 # Twelve Data forex symbols use a slash.
