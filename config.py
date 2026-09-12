@@ -11,11 +11,13 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 PAIRS: tuple[str, ...] = (
+    "EURUSD",
     "GBPUSD",
-    "EURAUD",
-    "NZDCAD",
-    "BTCUSDT",
-    "ETHUSDT",
+    "USDJPY",
+    "USDCHF",
+    "USDCAD",
+    "AUDUSD",
+    "NZDUSD",
 )
 
 # Twelve Data forex symbols use a slash.
@@ -50,7 +52,7 @@ TWELVE_DATA_BASE_URL = os.getenv(
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "1200"))
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "1800"))
 PORT = int(os.getenv("PORT", "8080"))
 HOST = os.getenv("HOST", "0.0.0.0")
 STATE_PATH = Path(os.getenv("STATE_PATH", str(BASE_DIR / "data" / "state.json")))
