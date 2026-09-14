@@ -55,11 +55,47 @@ class TelegramService:
             previous_state = str(event.get("previous_state", "UNKNOWN"))
             reason = str(event.get("reason", "unknown"))
             details = event.get("details", {})
+            pair_state = event.get("pair_state", {})
+            
             heading = "SETUP ENDED" if reason.startswith("user_ended_") else "SETUP INVALIDATED"
+            
+            # Build detailed state information
+            state_details = []
+            if pair_state.get("direction"):
+                state_details.append(f"Direction: {_html(pair_state['direction'])}")
+            if pair_state.get("daily_setup"):
+                state_details.append(f"Daily Setup: {_html(pair_state['daily_setup'])}")
+            if pair_state.get("daily_level_type"):
+                state_details.append(f"Daily Level Type: {_html(pair_state['daily_level_type'])}")
+            if pair_state.get("daily_level_price"):
+                state_details.append(f"Daily Level: <code>{pair_state['daily_level_price']:.5f}</code>".rstrip("0").rstrip("."))
+            if pair_state.get("h4_level_type"):
+                state_details.append(f"H4 Level Type: {_html(pair_state['h4_level_type'])}")
+            if pair_state.get("h4_level_price"):
+                state_details.append(f"H4 Level: <code>{pair_state['h4_level_price']:.5f}</code>".rstrip("0").rstrip("."))
+            if pair_state.get("rejection_status") and pair_state["rejection_status"] != "NONE":
+                state_details.append(f"Rejection: {_html(pair_state['rejection_status'])}")
+            if pair_state.get("breakout_status") and pair_state["breakout_status"] != "NONE":
+                state_details.append(f"Breakout: {_html(pair_state['breakout_status'])}")
+            if pair_state.get("retest_status") and pair_state["retest_status"] != "NONE":
+                state_details.append(f"Retest: {_html(pair_state['retest_status'])}")
+            if pair_state.get("continuation_status") and pair_state["continuation_status"] != "NONE":
+                state_details.append(f"Continuation: {_html(pair_state['continuation_status'])}")
+            if pair_state.get("h4_bars_since_breakout"):
+                state_details.append(f"Bars since breakout: {pair_state['h4_bars_since_breakout']}")
+            if pair_state.get("setup_id"):
+                state_details.append(f"Setup ID: <code>{pair_state['setup_id']}</code>")
+            
+            state_text = "\n".join(state_details) if state_details else "No active setup details"
+            
             text = (
                 f"<b>{heading}: {pair}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"Previous state: {_html(previous_state)}\n"
                 f"Reason: {_html(reason)}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{state_text}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"Details: {_html(str(details) if details else 'N/A')}"
             )
             return self.send_html(text)

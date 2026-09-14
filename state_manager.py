@@ -219,6 +219,7 @@ class StateManager:
                 "reason": reason,
                 "details": details or {},
                 "setup_id": previous.get("setup_id"),
+                "pair_state": previous,
                 "at": _now(),
             }
         )
