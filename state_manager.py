@@ -69,16 +69,14 @@ class StateManager:
         self._redis_client = None
         self._redis_key = "battousai:scanner:state"
         
-        # Initialize Redis if available and configured
-        if REDIS_AVAILABLE and hasattr(config, "UPSTASH_REDIS_URL"):
+        # Initialize Redis client if available
+        if REDIS_AVAILABLE and config.UPSTASH_REDIS_URL:
             try:
-                self._redis_client = redis.from_url(
-                    config.UPSTASH_REDIS_URL,
-                    decode_responses=True,
-                    socket_timeout=5,
-                    socket_connect_timeout=5
-                )
-                # Test connection
+                # Force SSL for Upstash
+                redis_url = config.UPSTASH_REDIS_URL
+                if redis_url.startswith("redis://"):
+                    redis_url = redis_url.replace("redis://", "rediss://", 1)
+                self._redis_client = redis.from_url(redis_url, ssl_cert_reqs=None)
                 self._redis_client.ping()
                 log.info("Redis connection established")
             except Exception as exc:
