@@ -51,7 +51,7 @@ MAX_DISTANCE_PIPS_FOR_INVALIDATION = float(
 )
 GAP_THRESHOLD_PIPS = float(os.getenv("GAP_THRESHOLD_PIPS", "15"))
 AGING_WARNING_H4_BARS = int(os.getenv("AGING_WARNING_H4_BARS", "12"))
-NEWS_FILTER_ENABLED = os.getenv("NEWS_FILTER_ENABLED", "true").lower() in {
+NEWS_FILTER_ENABLED = os.getenv("NEWS_FILTER_ENABLED", "false").lower() in {
     "true",
     "1",
     "yes",
