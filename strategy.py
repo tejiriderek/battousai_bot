@@ -54,6 +54,10 @@ class StrategyEngine:
 
         self.states.update(pair, last_daily_bar=daily_bar, last_h4_bar=h4_bar)
 
+        if self._invalidate_dead_setup(pair, state, daily, h4, eps):
+            return None
+        state = self.states.get(pair)
+
         daily_event = _daily_setup(daily, daily_levels, eps)
         if daily_event and _opposes(state.get("direction"), daily_event["direction"]):
             log.info("%s daily direction flipped; resetting", pair)
@@ -140,6 +144,85 @@ class StrategyEngine:
             breakout_status="CONFIRMED" if event["kind"] == "BREAKOUT" else "NONE",
             candle_close_status=event["close_status"],
         )
+
+    def _invalidate_dead_setup(
+        self,
+        pair: str,
+        state: dict[str, Any],
+        daily: pd.DataFrame,
+        h4: pd.DataFrame,
+        eps: float,
+    ) -> bool:
+        direction = state.get("direction")
+        if not direction:
+            return False
+
+        daily_level = state.get("daily_level_price")
+        if daily_level is not None:
+            daily_close = float(daily.iloc[-1]["close"])
+            if direction == "BULLISH" and daily_close < float(daily_level) - eps:
+                log.warning("%s invalidated: daily close %s fell below %s on bullish setup", pair, daily_close, daily_level)
+                self.states.reset(
+                    pair,
+                    last_alert_key=state.get("last_alert_key"),
+                    last_alert_at=state.get("last_alert_at"),
+                )
+                return True
+            if direction == "BEARISH" and daily_close > float(daily_level) + eps:
+                log.warning("%s invalidated: daily close %s rose above %s on bearish setup", pair, daily_close, daily_level)
+                self.states.reset(
+                    pair,
+                    last_alert_key=state.get("last_alert_key"),
+                    last_alert_at=state.get("last_alert_at"),
+                )
+                return True
+
+        h4_level = state.get("h4_level_price")
+        if h4_level is not None:
+            h4_close = float(h4.iloc[-1]["close"])
+            if direction == "BULLISH" and h4_close < float(h4_level) - eps:
+                log.warning("%s invalidated: H4 close %s broke below %s on bullish setup", pair, h4_close, h4_level)
+                self.states.reset(
+                    pair,
+                    last_alert_key=state.get("last_alert_key"),
+                    last_alert_at=state.get("last_alert_at"),
+                )
+                return True
+            if direction == "BEARISH" and h4_close > float(h4_level) + eps:
+                log.warning("%s invalidated: H4 close %s broke above %s on bearish setup", pair, h4_close, h4_level)
+                self.states.reset(
+                    pair,
+                    last_alert_key=state.get("last_alert_key"),
+                    last_alert_at=state.get("last_alert_at"),
+                )
+                return True
+
+        active_state = state.get("state")
+        if h4_level is not None and active_state in {"H4_BREAKOUT_CONFIRMED", "WAITING_FOR_RETEST", "RETEST_CONFIRMED", "CONTINUATION_CONFIRMED"}:
+            current_price = float(h4.iloc[-1]["close"])
+            distance = abs(current_price - float(h4_level))
+            pips = distance * 10000.0 if not pair.endswith("JPY") else distance * 100.0
+            if pips > config.MAX_DISTANCE_PIPS_FOR_INVALIDATION:
+                log.warning(
+                    "%s invalidated: price moved %.0f pips from breakout level %.5f; setup no longer likely to retest",
+                    pair,
+                    pips,
+                    float(h4_level),
+                )
+                self.states.reset(
+                    pair,
+                    last_alert_key=state.get("last_alert_key"),
+                    last_alert_at=state.get("last_alert_at"),
+                )
+                return True
+
+        breakout_time = state.get("h4_breakout_bar_time")
+        if breakout_time and active_state in {"H4_WAITING", "H4_BREAKOUT_CONFIRMED", "WAITING_FOR_RETEST", "RETEST_CONFIRMED", "CONTINUATION_CONFIRMED"}:
+            bars_after = _bars_after(h4, breakout_time)
+            if len(bars_after) >= 12 and len(bars_after) < 36:
+                log.info("%s setup still active after %s H4 bars; waiting for retest without killing", pair, len(bars_after))
+
+        return False
 
     def _handle_retest(self, pair: str, h4: pd.DataFrame, eps: float) -> ScanResult | None:
         state = self.states.get(pair)
