@@ -53,11 +53,15 @@ class EconomicCalendarService:
         events: list[dict[str, Any]] = []
         retrieved_at = datetime.now(timezone.utc).isoformat()
         
-        # Try Trading Economics API first if key is available
-        if config.TRADING_ECONOMICS_API_KEY:
+        # Try FRED API first if key is available
+        if config.FRED_API_KEY:
+            events = self._fetch_from_fred()
+        
+        # Try Trading Economics API as fallback
+        if not events and config.TRADING_ECONOMICS_API_KEY:
             events = self._fetch_from_trading_economics()
         
-        # Fallback to web scraping if API fails or no key
+        # Fallback to web scraping if all APIs fail
         if not events:
             for name, currency, url in SOURCES:
                 events.extend(self._fetch_from_source(url, name))
@@ -217,6 +221,90 @@ class EconomicCalendarService:
             return []
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("Trading Economics API parsing failed: %s", exc)
+            return []
+
+    def _fetch_from_fred(self) -> list[dict[str, Any]]:
+        try:
+            # FRED releases API for upcoming economic releases
+            url = "https://api.stlouisfed.org/fred/releases"
+            params = {
+                "api_key": config.FRED_API_KEY,
+                "file_type": "json",
+                "limit": 1000,
+                "offset": 0,
+                "order_by": "release_id",
+                "sort_order": "asc"
+            }
+            response = requests.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            events: list[dict[str, Any]] = []
+            high_impact_releases = {
+                "FOMC": "Federal Open Market Committee",
+                "PAYEMS": "Nonfarm Payroll Employment",
+                "CPIAUCSL": "Consumer Price Index",
+                "GDP": "Gross Domestic Product",
+                "UMCSENT": "Consumer Sentiment",
+                "PAYEMS": "Nonfarm Payroll Employment",
+                "CIVPART": "Labor Force Participation Rate",
+                "UNRATE": "Unemployment Rate",
+            }
+            
+            # Get release dates for high-impact releases
+            for release_id, release_name in high_impact_releases.items():
+                try:
+                    dates_url = "https://api.stlouisfed.org/fred/release/dates"
+                    dates_params = {
+                        "api_key": config.FRED_API_KEY,
+                        "file_type": "json",
+                        "release_id": release_id,
+                        "limit": 10,
+                        "order_by": "release_date",
+                        "sort_order": "desc"
+                    }
+                    dates_response = requests.get(dates_url, params=dates_params, timeout=15)
+                    dates_response.raise_for_status()
+                    dates_data = dates_response.json()
+                    
+                    if "release_dates" in dates_data:
+                        for date_info in dates_data["release_dates"]:
+                            event_date = date_info.get("release_date", "")
+                            if not event_date:
+                                continue
+                            
+                            # FOMC typically at 2:00 PM EST, NFP at 8:30 AM EST
+                            if release_id == "FOMC":
+                                event_time = "14:00:00"
+                            else:
+                                event_time = "08:30:00"
+                            
+                            try:
+                                dt = datetime.strptime(f"{event_date} {event_time}", "%Y-%m-%d %H:%M:%S")
+                                event_time_utc = dt.replace(tzinfo=timezone.utc).isoformat()
+                            except ValueError:
+                                event_time_utc = None
+                            
+                            events.append({
+                                "event_name": release_name,
+                                "currency": "USD",
+                                "impact": "HIGH",
+                                "event_date_utc": event_date,
+                                "event_time_utc": event_time_utc,
+                                "source": "FRED",
+                                "source_url": "https://fred.stlouisfed.org",
+                                "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
+                            })
+                except requests.RequestException:
+                    continue
+            
+            log.info("Retrieved %d high-impact events from FRED API", len(events))
+            return events
+        except requests.RequestException as exc:
+            log.warning("FRED API failed: %s", exc)
+            return []
+        except (KeyError, ValueError, TypeError) as exc:
+            log.warning("FRED API parsing failed: %s", exc)
             return []
 
 
