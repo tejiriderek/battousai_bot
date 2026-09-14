@@ -144,6 +144,20 @@ class EconomicCalendarService:
         )
         temporary.replace(self.path)
 
+    def _fetch_from_source(self, url: str, source_name: str) -> list[dict[str, Any]]:
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            response = requests.get(url, timeout=15, headers=headers)
+            response.raise_for_status()
+            events = _parse_source(source_name, "USD", url, response.text, datetime.now(timezone.utc).isoformat())
+            log.info("Retrieved %d events from %s", len(events), source_name)
+            return events
+        except requests.RequestException as exc:
+            log.warning("Calendar source failed: %s (%s)", url, exc)
+            return []
+
 
 def _parse_source(
     name: str,
