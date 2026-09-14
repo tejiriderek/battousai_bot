@@ -61,6 +61,7 @@ EMPTY_PAIR = {
     "warning_sent_at": None,
     "warning_type": None,
     "warning_acknowledged": False,
+    "confirmation_prompt_count": 0,
     "retest_allowed": None,
     "second_chance_allowed": None,
 }
@@ -320,8 +321,18 @@ class StateManager:
         return True
 
     def record_warning_sent(self, pair: str, warning_type: str) -> None:
-        """Record that a warning was sent for this pair."""
-        self.update(pair, warning_sent_at=_now(), warning_type=warning_type, warning_acknowledged=False)
+        """Record a prompt and preserve its count across restarts."""
+        current = self.get(pair)
+        prompt_count = current.get("confirmation_prompt_count", 0)
+        if current.get("warning_type") != warning_type or current.get("warning_acknowledged"):
+            prompt_count = 0
+        self.update(
+            pair,
+            warning_sent_at=_now(),
+            warning_type=warning_type,
+            warning_acknowledged=False,
+            confirmation_prompt_count=int(prompt_count) + 1,
+        )
 
     def should_reprompt_warning(self, pair: str, timeout_minutes: int = 5) -> bool:
         """Check if a warning should be re-prompted (not acknowledged and timed out)."""

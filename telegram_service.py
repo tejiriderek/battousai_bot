@@ -115,7 +115,7 @@ class TelegramService:
                 + ("Existing setup remains active and will be monitored." if active else "No active setup was changed.")
             )
             markup = None
-            if active and event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
+            if active and event.get("setup_id"):
                 markup = _decision_markup("gap", pair, str(event["setup_id"]))
                 if self.state_manager:
                     self.state_manager.record_warning_sent(pair, "gap")
@@ -139,7 +139,7 @@ class TelegramService:
                     f"Current state: {_html(event.get('state', 'unknown'))}"
                 )
             markup = None
-            if event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
+            if event.get("setup_id"):
                 markup = _decision_markup(warning_type, pair, str(event["setup_id"]))
                 if self.state_manager:
                     self.state_manager.record_warning_sent(pair, warning_type)
@@ -154,7 +154,7 @@ class TelegramService:
                 f"Do you want to allow it for this pair only, or skip it?"
             )
             markup = None
-            if event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
+            if event.get("setup_id"):
                 markup = _decision_markup(str(event.get("warning_type", "rule")), pair, str(event["setup_id"]))
                 if self.state_manager:
                     self.state_manager.record_warning_sent(pair, str(event.get("warning_type", "rule")))

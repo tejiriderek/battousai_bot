@@ -48,6 +48,8 @@ TWELVE_DATA_API_KEY=your_twelve_data_key
 TWELVE_DATA_API_KEY_SECOND=your_second_twelve_data_key
 TELEGRAM_BOT_TOKEN=123456:ABC...
 TELEGRAM_CHAT_ID=123456789
+CONFIRMATION_REPROMPT_MINUTES=5
+CONFIRMATION_MAX_PROMPTS=5
 ```
 
 Twelve Data key: [twelvedata.com/apikey](https://twelvedata.com/apikey).  
@@ -98,3 +100,4 @@ Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
 - State lives in `data/state.json` (ephemeral on free Render; a restart can lose in-flight setups but will not re-send an alert if the file is still there).
 - JPY pairs use 0.01 pip size for epsilon only; the retest still targets the stored broken price.
 - This bot does not place trades. It only scans and alerts.
+- Unanswered Telegram confirmations are re-sent with YES/NO buttons every five minutes; after five unanswered prompts, the bot auto-approves with YES.

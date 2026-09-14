@@ -41,7 +41,6 @@ def scanner_loop() -> None:
         cycle_started = time.monotonic()
         try:
             _calendar.refresh_calendar()
-            _check_warning_timeouts()
             _scan_once()
         except Exception:
             log.exception("Scan cycle crashed; continuing")
@@ -54,45 +53,93 @@ def scanner_loop() -> None:
         _sleep(sleep_for)
 
 
+def confirmation_reminder_loop() -> None:
+    while not _telegram_stop.is_set():
+        if _running.is_set():
+            _check_warning_timeouts()
+        _telegram_stop.wait(30.0)
+
+
 def _check_warning_timeouts() -> None:
-    """Check for warning timeouts and auto-apply or re-prompt as needed."""
+    """Re-prompt unresolved confirmations without changing their decision."""
     for pair in config.PAIRS:
         try:
-            # Auto-apply YES after 10 minutes timeout
-            if _states.auto_apply_warning_timeout(pair, timeout_minutes=10):
-                log.info("Auto-applied YES for warning timeout on %s", pair)
-                _send_pending_events()
-            
-            # Re-prompt after 5 minutes if not acknowledged
-            elif _states.should_reprompt_warning(pair, timeout_minutes=5):
-                current = _states.get(pair)
-                warning_type = current.get("warning_type")
-                setup_id = current.get("setup_id")
-                if warning_type and setup_id and current.get("state") != "WATCHING":
-                    # Re-send the warning event
-                    event = {
-                        "type": f"{warning_type}_warning",
-                        "pair": pair,
-                        "setup_id": setup_id,
-                        "state": current.get("state"),
-                    }
-                    if warning_type == "aging":
-                        event["bars"] = current.get("h4_bars_since_breakout", 0)
-                    elif warning_type == "gap":
-                        event["gap_pips"] = current.get("weekend_gap_pips", 0)
-                        event["friday_close"] = "N/A"
-                        event["monday_open"] = "N/A"
-                        event["active_setup"] = True
-                    elif warning_type == "news":
-                        event["event_name"] = "Unknown"
-                        event["currency"] = "Unknown"
-                        event["event_time_utc"] = None
-                    
-                    _states.record_event(event)
+            current = _states.get(pair)
+            warning_type = current.get("warning_type")
+            setup_id = current.get("setup_id")
+            if (
+                not warning_type
+                or not setup_id
+                or current.get("state") == "WATCHING"
+                or current.get("warning_acknowledged")
+            ):
+                continue
+            warning_sent_at = current.get("warning_sent_at")
+            if warning_sent_at and not _states.should_reprompt_warning(
+                pair, timeout_minutes=config.CONFIRMATION_REPROMPT_MINUTES
+            ):
+                continue
+
+            prompt_count = int(current.get("confirmation_prompt_count", 0))
+            if prompt_count >= config.CONFIRMATION_MAX_PROMPTS:
+                applied = _states.apply_warning_decision(
+                    pair, setup_id, warning_type, "yes"
+                )
+                if applied:
                     _send_pending_events()
-                    log.info("Re-prompted %s warning for %s", warning_type, pair)
+                    log.info(
+                        "Auto-approved %s confirmation for %s after %d prompts",
+                        warning_type,
+                        pair,
+                        prompt_count,
+                    )
+                continue
+
+            event = _confirmation_event(pair, current, warning_type, setup_id)
+            _states.record_event(event)
+            _send_pending_events()
+            log.info("Sent confirmation prompt for %s warning on %s", warning_type, pair)
         except Exception:
             log.exception("Error checking warning timeout for %s", pair)
+
+
+def _confirmation_event(
+    pair: str, state: dict, warning_type: str, setup_id: str
+) -> dict:
+    if warning_type in {"retest", "second_chance"}:
+        return {
+            "type": "rule_decision",
+            "pair": pair,
+            "setup_id": setup_id,
+            "warning_type": warning_type,
+            "state": state.get("state"),
+        }
+    if warning_type == "gap":
+        return {
+            "type": "weekend_gap",
+            "pair": pair,
+            "setup_id": setup_id,
+            "active_setup": True,
+            "gap_pips": state.get("weekend_gap_pips", 0),
+            "friday_close": "N/A",
+            "monday_open": "N/A",
+        }
+    if warning_type == "aging":
+        return {
+            "type": "aging_warning",
+            "pair": pair,
+            "setup_id": setup_id,
+            "bars": state.get("h4_bars_since_breakout", 0),
+        }
+    return {
+        "type": "news_warning",
+        "pair": pair,
+        "setup_id": setup_id,
+        "event_name": "Unknown",
+        "currency": "Unknown",
+        "event_time_utc": None,
+        "state": state.get("state"),
+    }
 
 
 def _scan_once() -> None:
@@ -138,9 +185,14 @@ def _handle_telegram_update(update: dict) -> None:
     callback_id = callback.get("id")
     data = str(callback.get("data", ""))
     sender_id = str((callback.get("from") or {}).get("id", ""))
+    chat_id = str(((callback.get("message") or {}).get("chat") or {}).get("id", ""))
     if callback_id:
         _telegram.answer_callback(callback_id, "Checking setup...")
-    if not config.TELEGRAM_AUTHORIZED_USER_ID or sender_id != config.TELEGRAM_AUTHORIZED_USER_ID:
+    if config.TELEGRAM_AUTHORIZED_USER_ID:
+        authorized = sender_id == config.TELEGRAM_AUTHORIZED_USER_ID
+    else:
+        authorized = bool(config.TELEGRAM_CHAT_ID) and chat_id == config.TELEGRAM_CHAT_ID
+    if not authorized:
         log.warning("Unauthorized Telegram callback rejected: user=%s", sender_id)
         if callback_id:
             _telegram.answer_callback(callback_id, "Unauthorized", show_alert=True)
@@ -180,6 +232,11 @@ def main() -> int:
 
     worker = threading.Thread(target=scanner_loop, name="scanner", daemon=True)
     worker.start()
+    threading.Thread(
+        target=confirmation_reminder_loop,
+        name="confirmation-reminders",
+        daemon=True,
+    ).start()
     if config.TELEGRAM_BOT_TOKEN:
         threading.Thread(
             target=_telegram.poll_updates,
@@ -191,6 +248,7 @@ def main() -> int:
     app = create_app(_states.snapshot, _running.is_set)
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
     _running.clear()
+    _telegram_stop.set()
     return 0
 
 
