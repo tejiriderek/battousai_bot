@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from typing import Any, Callable
 
 import requests
 
@@ -21,7 +24,7 @@ class TelegramService:
             return False
         return self.send_html(format_alert(result))
 
-    def send_html(self, text: str) -> bool:
+    def send_html(self, text: str, reply_markup: dict[str, Any] | None = None) -> bool:
         url = f"{TELEGRAM_API}/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": config.TELEGRAM_CHAT_ID,
@@ -29,6 +32,8 @@ class TelegramService:
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         try:
             response = requests.post(url, json=payload, timeout=15)
             try:
@@ -42,6 +47,125 @@ class TelegramService:
         except requests.RequestException as exc:
             log.error("Telegram unreachable: %s", exc)
             return False
+
+    def send_event(self, event: dict[str, Any]) -> bool:
+        event_type = event.get("type")
+        if event_type == "setup_invalidated":
+            pair = str(event["pair"])
+            previous_state = str(event.get("previous_state", "UNKNOWN"))
+            reason = str(event.get("reason", "unknown"))
+            details = event.get("details", {})
+            heading = "SETUP ENDED" if reason.startswith("user_ended_") else "SETUP INVALIDATED"
+            text = (
+                f"<b>{heading}: {pair}</b>\n"
+                f"Previous state: {_html(previous_state)}\n"
+                f"Reason: {_html(reason)}\n"
+                f"Details: {_html(str(details) if details else 'N/A')}"
+            )
+            return self.send_html(text)
+
+        if event_type == "weekend_gap":
+            pair = str(event["pair"])
+            active = bool(event.get("active_setup"))
+            text = (
+                f"<b>⚠️ WEEKEND GAP DETECTED: {pair}</b>\n"
+                f"Gap: {float(event['gap_pips']):.1f} pips\n"
+                f"Friday close: <code>{event['friday_close']}</code>\n"
+                f"Monday open: <code>{event['monday_open']}</code>\n"
+                "The gap does not count as a breakout.\n"
+                + ("Existing setup remains active and will be monitored." if active else "No active setup was changed.")
+            )
+            markup = None
+            if active and event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
+                markup = _decision_markup("gap", pair, str(event["setup_id"]))
+            return self.send_html(text, markup)
+
+        if event_type in {"aging_warning", "news_warning"}:
+            pair = str(event["pair"])
+            warning_type = "aging" if event_type == "aging_warning" else "news"
+            if warning_type == "aging":
+                text = (
+                    f"<b>⏳ SETUP AGING: {pair}</b>\n"
+                    f"This setup has been waiting for {event['bars']} H4 candles.\n"
+                    "Age alone will not invalidate it."
+                )
+            else:
+                text = (
+                    f"<b>📰 HIGH-IMPACT NEWS WARNING: {pair}</b>\n"
+                    f"Event: {_html(event.get('event_name', 'Unknown'))}\n"
+                    f"Currency: {_html(event.get('currency', 'Unknown'))}\n"
+                    f"Time: {_html(event.get('event_time_utc') or event.get('event_date_utc', 'unknown'))}\n"
+                    f"Current state: {_html(event.get('state', 'unknown'))}"
+                )
+            markup = None
+            if event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
+                markup = _decision_markup(warning_type, pair, str(event["setup_id"]))
+            return self.send_html(text, markup)
+
+        if event_type == "state_transition":
+            if event.get("to_state") == "ALERT_SENT":
+                return True
+            pair = str(event.get("pair"))
+            to_state = str(event.get("to_state"))
+            reason = str(event.get("reason") or "state_transition")
+            if to_state == "WATCHING":
+                return True  # Already handled by setup_invalidated event
+            else:
+                labels = {
+                    "DAILY_REJECTION_DETECTED": "🟢 DAILY STAGE PASSED",
+                    "DAILY_BREAKOUT_CONFIRMED": "🟢 DAILY STAGE PASSED",
+                    "H4_WAITING": "🟢 H4 STAGE PASSED",
+                    "WAITING_FOR_RETEST": "⏳ WAITING FOR RETEST",
+                    "RETEST_CONFIRMED": "🟢 RETEST CONFIRMED",
+                    "CONTINUATION_CONFIRMED": "🟢 CONTINUATION CONFIRMED",
+                }
+                text = f"<b>{_html(labels.get(to_state, to_state))}: {pair}</b>"
+            return self.send_html(text)
+
+        if event_type == "warning_decision":
+            decision = str(event.get("decision", "")).upper()
+            pair = str(event.get("pair"))
+            if decision == "YES":
+                text = f"<b>{pair} - CONTINUE</b>\nThe {event.get('warning_type')} warning was accepted for this setup."
+            else:
+                text = f"<b>{pair} - SETUP ENDED</b>\nYou chose not to continue after the {event.get('warning_type')} warning."
+            return self.send_html(text)
+
+        return True
+
+    def answer_callback(self, callback_id: str, text: str, show_alert: bool = False) -> bool:
+        try:
+            response = requests.post(
+                f"{TELEGRAM_API}/bot{config.TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                json={"callback_query_id": callback_id, "text": text, "show_alert": show_alert},
+                timeout=15,
+            )
+            return response.ok
+        except requests.RequestException as exc:
+            log.warning("Telegram callback response failed: %s", exc)
+            return False
+
+    def poll_updates(
+        self,
+        handler: Callable[[dict[str, Any]], None],
+        stop_event: threading.Event,
+    ) -> None:
+        """Poll callbacks without making the scanner dependent on Telegram."""
+        offset = 0
+        while not stop_event.is_set() and config.TELEGRAM_BOT_TOKEN:
+            try:
+                response = requests.get(
+                    f"{TELEGRAM_API}/bot{config.TELEGRAM_BOT_TOKEN}/getUpdates",
+                    params={"timeout": 20, "offset": offset, "allowed_updates": '["callback_query"]'},
+                    timeout=30,
+                )
+                updates = response.json().get("result", [])
+                for update in updates:
+                    offset = max(offset, int(update["update_id"]) + 1)
+                    handler(update)
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                log.warning("Telegram update polling failed: %s", exc)
+                time.sleep(5)
 
 
 def format_alert(result: ScanResult) -> str:
@@ -75,3 +199,12 @@ def _html(value: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _decision_markup(kind: str, pair: str, setup_id: str) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [[
+            {"text": "YES - CONTINUE", "callback_data": f"decision|yes|{kind}|{pair}|{setup_id}"},
+            {"text": "NO - END SETUP", "callback_data": f"decision|no|{kind}|{pair}|{setup_id}"},
+        ]]
+    }

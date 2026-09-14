@@ -12,6 +12,7 @@ import uvicorn
 
 import config
 from data_service import DataServiceError, TwelveDataClient
+from economic_calendar import EconomicCalendarService
 from state_manager import StateManager
 from strategy import StrategyEngine
 from telegram_service import TelegramService
@@ -27,7 +28,9 @@ _running = threading.Event()
 _states = StateManager()
 _telegram = TelegramService()
 _client = TwelveDataClient()
-_strategy = StrategyEngine(_states)
+_calendar = EconomicCalendarService()
+_strategy = StrategyEngine(_states, _calendar)
+_telegram_stop = threading.Event()
 
 
 def scanner_loop() -> None:
@@ -37,6 +40,7 @@ def scanner_loop() -> None:
     while _running.is_set():
         cycle_started = time.monotonic()
         try:
+            _calendar.refresh_calendar()
             _scan_once()
         except Exception:
             log.exception("Scan cycle crashed; continuing")
@@ -68,6 +72,7 @@ def _scan_once() -> None:
                     result.direction,
                     sent,
                 )
+            _send_pending_events()
         except DataServiceError as exc:
             log.warning("%s data error: %s", pair, exc)
             if "HTTP 429" in str(exc) or "credit/limit error" in str(exc):
@@ -75,6 +80,41 @@ def _scan_once() -> None:
                 return
         except Exception:
             log.exception("Unhandled error scanning %s", pair)
+    _send_pending_events()
+
+
+def _send_pending_events() -> None:
+    for event in _states.drain_events():
+        try:
+            _telegram.send_event(event)
+        except Exception:
+            log.exception("Unable to deliver Telegram event: %s", event.get("type"))
+
+
+def _handle_telegram_update(update: dict) -> None:
+    callback = update.get("callback_query") or {}
+    callback_id = callback.get("id")
+    data = str(callback.get("data", ""))
+    sender_id = str((callback.get("from") or {}).get("id", ""))
+    if callback_id:
+        _telegram.answer_callback(callback_id, "Checking setup...")
+    if not config.TELEGRAM_AUTHORIZED_USER_ID or sender_id != config.TELEGRAM_AUTHORIZED_USER_ID:
+        log.warning("Unauthorized Telegram callback rejected: user=%s", sender_id)
+        if callback_id:
+            _telegram.answer_callback(callback_id, "Unauthorized", show_alert=True)
+        return
+    parts = data.split("|")
+    if len(parts) != 5 or parts[0] != "decision":
+        return
+    _, decision, warning_type, pair, setup_id = parts
+    applied = _states.apply_warning_decision(pair, setup_id, warning_type, decision)
+    if callback_id:
+        _telegram.answer_callback(
+            callback_id,
+            "Decision saved" if applied else "This setup is no longer active",
+            show_alert=not applied,
+        )
+    _send_pending_events()
 
 
 def _sleep(seconds: float) -> None:
@@ -98,6 +138,13 @@ def main() -> int:
 
     worker = threading.Thread(target=scanner_loop, name="scanner", daemon=True)
     worker.start()
+    if config.TELEGRAM_BOT_TOKEN:
+        threading.Thread(
+            target=_telegram.poll_updates,
+            args=(_handle_telegram_update, _telegram_stop),
+            name="telegram-callbacks",
+            daemon=True,
+        ).start()
 
     app = create_app(_states.snapshot, _running.is_set)
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
