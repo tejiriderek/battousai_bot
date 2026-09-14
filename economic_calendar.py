@@ -53,12 +53,7 @@ class EconomicCalendarService:
         events: list[dict[str, Any]] = []
         retrieved_at = datetime.now(timezone.utc).isoformat()
         for name, currency, url in SOURCES:
-            try:
-                response = requests.get(url, timeout=20)
-                response.raise_for_status()
-                events.extend(_parse_source(name, currency, url, response.text, retrieved_at))
-            except (requests.RequestException, ValueError) as exc:
-                log.warning("Calendar source failed: %s (%s)", url, exc)
+            events.extend(self._fetch_from_source(url, name))
 
         if not events:
             self._stale = True
@@ -104,7 +99,8 @@ class EconomicCalendarService:
         if not config.NEWS_FILTER_ENABLED:
             return False
         if self._stale or not self._events:
-            return True
+            log.warning("Calendar stale; allowing new setups without news filter")
+            return False
         return self.is_news_blackout(now_utc or datetime.now(timezone.utc), pair)
 
     def get_upcoming_events(self, now_utc: datetime | None = None) -> list[dict[str, Any]]:
