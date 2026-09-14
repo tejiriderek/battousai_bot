@@ -52,8 +52,15 @@ class EconomicCalendarService:
 
         events: list[dict[str, Any]] = []
         retrieved_at = datetime.now(timezone.utc).isoformat()
-        for name, currency, url in SOURCES:
-            events.extend(self._fetch_from_source(url, name))
+        
+        # Try Trading Economics API first if key is available
+        if config.TRADING_ECONOMICS_API_KEY:
+            events = self._fetch_from_trading_economics()
+        
+        # Fallback to web scraping if API fails or no key
+        if not events:
+            for name, currency, url in SOURCES:
+                events.extend(self._fetch_from_source(url, name))
 
         if not events:
             self._stale = True
@@ -156,6 +163,60 @@ class EconomicCalendarService:
             return events
         except requests.RequestException as exc:
             log.warning("Calendar source failed: %s (%s)", url, exc)
+            return []
+
+    def _fetch_from_trading_economics(self) -> list[dict[str, Any]]:
+        try:
+            url = f"https://api.tradingeconomics.com/calendar?c={config.TRADING_ECONOMICS_API_KEY}"
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            events: list[dict[str, Any]] = []
+            high_impact_events = ["FOMC", "NFP", "CPI", "GDP", "Retail Sales", "ISM Manufacturing", "ISM Services"]
+            
+            for item in data:
+                event_name = item.get("Event", "")
+                if not any(keyword in event_name.upper() for keyword in high_impact_events):
+                    continue
+                
+                country = item.get("Country", "")
+                currency_map = {"United States": "USD", "Euro Area": "EUR", "United Kingdom": "GBP", "Japan": "JPY", "Canada": "CAD", "Australia": "AUD", "New Zealand": "NZD"}
+                currency = currency_map.get(country, "")
+                
+                if not currency:
+                    continue
+                
+                event_date = item.get("Date", "")
+                event_time = item.get("Time", "")
+                
+                if event_date and event_time:
+                    try:
+                        dt = datetime.strptime(f"{event_date} {event_time}", "%Y-%m-%d %H:%M:%S")
+                        event_time_utc = dt.replace(tzinfo=timezone.utc).isoformat()
+                    except ValueError:
+                        event_time_utc = None
+                else:
+                    event_time_utc = None
+                
+                events.append({
+                    "event_name": event_name,
+                    "currency": currency,
+                    "impact": "HIGH",
+                    "event_date_utc": event_date,
+                    "event_time_utc": event_time_utc,
+                    "source": "Trading Economics",
+                    "source_url": "https://tradingeconomics.com/calendar",
+                    "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
+                })
+            
+            log.info("Retrieved %d high-impact events from Trading Economics API", len(events))
+            return events
+        except requests.RequestException as exc:
+            log.warning("Trading Economics API failed: %s", exc)
+            return []
+        except (KeyError, ValueError, TypeError) as exc:
+            log.warning("Trading Economics API parsing failed: %s", exc)
             return []
 
 
