@@ -226,14 +226,15 @@ class EconomicCalendarService:
     def _fetch_from_fred(self) -> list[dict[str, Any]]:
         try:
             events: list[dict[str, Any]] = []
+            # FRED release IDs (numeric, not series IDs)
             high_impact_releases = {
-                "FOMC": "Federal Open Market Committee",
-                "PAYEMS": "Nonfarm Payroll Employment",
-                "CPIAUCSL": "Consumer Price Index",
-                "GDP": "Gross Domestic Product",
-                "UMCSENT": "Consumer Sentiment",
-                "CIVPART": "Labor Force Participation Rate",
-                "UNRATE": "Unemployment Rate",
+                "10": "Employment Situation (NFP)",
+                "9": "Consumer Price Index (CPI)",
+                "53": "Gross Domestic Product (GDP)",
+                "50": "Federal Open Market Committee (FOMC)",
+                "35": "Retail Sales",
+                "20": "ISM Manufacturing PMI",
+                "24": "ISM Services PMI",
             }
             
             # Get release dates for high-impact releases
@@ -259,7 +260,7 @@ class EconomicCalendarService:
                                 continue
                             
                             # FOMC typically at 2:00 PM EST, NFP at 8:30 AM EST
-                            if release_id == "FOMC":
+                            if release_id == "50":  # FOMC
                                 event_time = "14:00:00"
                             else:
                                 event_time = "08:30:00"
