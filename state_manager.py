@@ -61,6 +61,8 @@ EMPTY_PAIR = {
     "warning_sent_at": None,
     "warning_type": None,
     "warning_acknowledged": False,
+    "retest_allowed": None,
+    "second_chance_allowed": None,
 }
 
 
@@ -151,7 +153,6 @@ class StateManager:
                 self._redis_client.set(
                     self._redis_key,
                     json.dumps(self._data, indent=2, default=str),
-                    ex=86400  # Expire after 24 hours
                 )
             except Exception as exc:
                 log.warning("Failed to save to Redis: %s", exc)
@@ -257,13 +258,16 @@ class StateManager:
         current = self.get(pair)
         if current.get("setup_id") != setup_id or current.get("state") == "WATCHING":
             return False
-        if warning_type not in {"gap", "news", "aging"} or decision not in {"yes", "no"}:
+        valid_types = {"gap", "news", "aging", "retest", "second_chance"}
+        if warning_type not in valid_types or decision not in {"yes", "no"}:
             return False
         if decision == "yes":
             field = {
                 "gap": "gap_override",
                 "news": "news_override",
                 "aging": "aging_override",
+                "retest": "retest_allowed",
+                "second_chance": "second_chance_allowed",
             }[warning_type]
             self.update(pair, **{field: True, "warning_acknowledged": True})
             self.record_event(
@@ -275,6 +279,22 @@ class StateManager:
                     "decision": "yes",
                     "resulting_state": current.get("state"),
                     "override_applied": True,
+                    "at": _now(),
+                }
+            )
+            return True
+
+        if warning_type in {"retest", "second_chance"}:
+            self.update(pair, **{f"{warning_type}_allowed": False, "warning_acknowledged": True})
+            self.record_event(
+                {
+                    "type": "warning_decision",
+                    "pair": pair,
+                    "setup_id": setup_id,
+                    "warning_type": warning_type,
+                    "decision": "no",
+                    "resulting_state": current.get("state"),
+                    "override_applied": False,
                     "at": _now(),
                 }
             )

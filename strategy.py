@@ -120,7 +120,7 @@ class StrategyEngine:
             name = "H4_WAITING"
 
         if name == "H4_WAITING":
-            h4_event = _h4_breakout(
+            h4_event = self._h4_breakout(
                 h4,
                 h4_levels,
                 state["direction"],
@@ -375,6 +375,22 @@ class StrategyEngine:
 
     def _handle_retest(self, pair: str, h4: pd.DataFrame, eps: float) -> ScanResult | None:
         state = self.states.get(pair)
+        if state.get("retest_allowed") is False:
+            self.states.reset(
+                pair,
+                reason="user_disabled_retest",
+                details={"pair": pair, "setup_id": state.get("setup_id")},
+                last_alert_key=state.get("last_alert_key"),
+                last_alert_at=state.get("last_alert_at"),
+            )
+            return None
+        if state.get("retest_allowed") is None:
+            if config.RULE_PROMPT_ENABLED:
+                self._request_rule_decision(pair, state, "retest")
+                if state.get("setup_id"):
+                    return None
+            self.states.update(pair, retest_allowed=True)
+
         level_price = float(state["h4_level_price"])
         breakout_time = state.get("h4_breakout_bar_time")
         bars_after = _bars_after(h4, breakout_time)
@@ -391,7 +407,204 @@ class StrategyEngine:
                     candle_close_status=_close_status(candle, state["direction"], level_price),
                 )
                 return None
+
+        second_chance = self._second_chance_ema_entry(pair, h4, state, level_price, eps)
+        if second_chance is not None:
+            return second_chance
         return None
+
+    def _request_rule_decision(self, pair: str, state: dict[str, Any], rule_name: str) -> None:
+        if state.get("state") == "WATCHING":
+            return
+        setup_id = state.get("setup_id")
+        if not setup_id:
+            return
+        if state.get("warning_type") == rule_name and not state.get("warning_acknowledged"):
+            return
+        self.states.update(pair, warning_type=rule_name, warning_acknowledged=False)
+        self.states.record_event(
+            {
+                "type": "rule_decision",
+                "pair": pair,
+                "setup_id": setup_id,
+                "warning_type": rule_name,
+                "state": state.get("state"),
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    def _second_chance_ema_entry(
+        self,
+        pair: str,
+        h4: pd.DataFrame,
+        state: dict[str, Any],
+        level_price: float,
+        eps: float,
+    ) -> ScanResult | None:
+        direction = state.get("direction")
+        if direction not in {"BULLISH", "BEARISH"}:
+            return None
+        if state.get("second_chance_allowed") is False:
+            return None
+        if state.get("second_chance_allowed") is None:
+            if config.RULE_PROMPT_ENABLED:
+                self._request_rule_decision(pair, state, "second_chance")
+                if state.get("setup_id"):
+                    return None
+            self.states.update(pair, second_chance_allowed=True)
+
+        breakout_time = state.get("h4_breakout_bar_time")
+        bars_after = _bars_after(h4, breakout_time)
+        if len(bars_after) < config.EMA_PULLBACK_MIN_BARS or len(bars_after) > config.EMA_PULLBACK_MAX_BARS:
+            return None
+
+        if state.get("retest_bar_time") is not None:
+            return None
+
+        closes = h4["close"].astype(float)
+        ema_span = min(config.EMA_PULLBACK_SPAN, max(2, len(closes)))
+        ema = closes.ewm(span=ema_span, adjust=False).mean()
+        signal_bar = bars_after.iloc[-1]
+        signal_close = float(signal_bar["close"])
+        signal_low = float(signal_bar["low"])
+        signal_high = float(signal_bar["high"])
+        ema_value = float(ema.iloc[-1])
+        ema_tolerance = 0.0001 if not pair.endswith("JPY") else 0.01
+
+        if direction == "BULLISH":
+            within_pullback = signal_low <= ema_value + ema_tolerance and signal_close > ema_value
+            still_running = signal_close > level_price + eps and signal_high > level_price + eps
+            if not (within_pullback and still_running):
+                return None
+        else:
+            within_pullback = signal_high >= ema_value - ema_tolerance and signal_close < ema_value
+            still_running = signal_close < level_price - eps and signal_low < level_price - eps
+            if not (within_pullback and still_running):
+                return None
+
+        alert_key = "|".join(
+            [
+                pair,
+                str(direction),
+                str(level_price),
+                "SECOND_CHANCE_PULLBACK",
+                str(breakout_time),
+            ]
+        )
+        if alert_key == state.get("last_alert_key"):
+            self.states.update(pair, state="ALERT_SENT")
+            return None
+
+        result = ScanResult(
+            pair=pair,
+            timeframe="H4",
+            direction=direction,
+            key_level_type=state.get("h4_level_type") or state.get("daily_level_type") or "UNKNOWN",
+            key_level_price=float(level_price),
+            rejection_status=state.get("rejection_status") or "NONE",
+            breakout_status=state.get("breakout_status") or "NONE",
+            candle_close_status=_close_status(signal_bar, direction, level_price),
+            level_flip=state.get("level_flip") or "NONE",
+            retest_status="SECOND_CHANCE_PULLBACK",
+            daily_confirmation="CONFIRMED" if state.get("daily_confirmed") else "PENDING",
+            h4_confirmation="CONFIRMED" if state.get("h4_confirmed") else "PENDING",
+            final_signal_status="SECOND_CHANCE_PULLBACK",
+            state="ALERT_SENT",
+            alert=True,
+        )
+        self.states.update(
+            pair,
+            state="ALERT_SENT",
+            last_alert_key=alert_key,
+            last_alert_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return result
+
+    def _h4_breakout(
+        self,
+        frame: pd.DataFrame,
+        levels: list[KeyLevel],
+        direction: str,
+        eps: float,
+        not_before: str | None = None,
+        excluded_times: set[str] | None = None,
+    ) -> dict[str, Any] | None:
+        a_levels = recent_levels(levels, "A_SHAPE", "RESISTANCE")
+        v_levels = recent_levels(levels, "V_SHAPE", "SUPPORT")
+        start = max(1, len(frame) - config.H4_SETUP_LOOKBACK_BARS)
+        for i in range(len(frame) - 1, start - 1, -1):
+            candle = frame.iloc[i]
+            prev = frame.iloc[i - 1]
+            if _iso(candle["datetime"]) in (excluded_times or set()):
+                log.info("%s | WEEKEND_GAP | candle_excluded_from_h4_breakout", _iso(candle["datetime"]))
+                continue
+            if not_before and pd.Timestamp(candle["datetime"]) < pd.Timestamp(not_before):
+                continue
+            if direction == "BULLISH":
+                candidates = list(reversed(a_levels))
+                recent_high = float(frame["high"].iloc[max(0, i - 30) : i].max())
+                candidates.append(
+                    KeyLevel("A_SHAPE", "RESISTANCE", recent_high, recent_high, recent_high, i - 1, _iso(prev["datetime"]))
+                )
+                for level in candidates:
+                    if level.index >= i:
+                        continue
+                    if _bullish_breakout(candle, prev, level.price, eps):
+                        window = frame.iloc[max(0, i - 9) : i + 1].copy()
+                        if not self._volume_gate_passes(window, direction):
+                            continue
+                        log.info("BODY_BREAKOUT | direction=BULLISH | level=%.8f | candle=%s", level.price, _iso(candle["datetime"]))
+                        return {
+                            "level": level,
+                            "bar_time": _iso(candle["datetime"]),
+                            "close_status": _close_status(candle, "BULLISH", level.price),
+                            "level_flip": "RBS",
+                        }
+            else:
+                candidates = list(reversed(v_levels))
+                recent_low = float(frame["low"].iloc[max(0, i - 30) : i].min())
+                candidates.append(
+                    KeyLevel("V_SHAPE", "SUPPORT", recent_low, recent_low, recent_low, i - 1, _iso(prev["datetime"]))
+                )
+                for level in candidates:
+                    if level.index >= i:
+                        continue
+                    if _bearish_breakout(candle, prev, level.price, eps):
+                        window = frame.iloc[max(0, i - 9) : i + 1].copy()
+                        if not self._volume_gate_passes(window, direction):
+                            continue
+                        log.info("BODY_BREAKOUT | direction=BEARISH | level=%.8f | candle=%s", level.price, _iso(candle["datetime"]))
+                        return {
+                            "level": level,
+                            "bar_time": _iso(candle["datetime"]),
+                            "close_status": _close_status(candle, "BEARISH", level.price),
+                            "level_flip": "SBR",
+                        }
+        return None
+
+    def _volume_gate_passes(self, frame: pd.DataFrame, direction: str | None = None) -> bool:
+        if not config.VOLUME_FILTER_ENABLED or frame.empty:
+            return True
+        if "volume" not in frame.columns:
+            return True
+        values = pd.to_numeric(frame["volume"], errors="coerce").dropna()
+        if values.empty:
+            return True
+        recent = values.tail(min(10, len(values)))
+        average = float(recent.mean())
+        current = float(values.iloc[-1])
+        if average <= 0:
+            return True
+        result = current >= average * config.VOLUME_FILTER_MIN_MULTIPLIER
+        if not result:
+            log.info(
+                "VOLUME_GATE_BLOCKED | current=%.0f | avg=%.0f | multiplier=%.2f | direction=%s",
+                current,
+                average,
+                config.VOLUME_FILTER_MIN_MULTIPLIER,
+                direction or "UNKNOWN",
+            )
+        return result
 
     def _handle_continuation(self, pair: str, h4: pd.DataFrame, eps: float) -> ScanResult | None:
         state = self.states.get(pair)
@@ -500,60 +713,6 @@ def _daily_setup(
     return None
 
 
-def _h4_breakout(
-    frame: pd.DataFrame,
-    levels: list[KeyLevel],
-    direction: str,
-    eps: float,
-    not_before: str | None = None,
-    excluded_times: set[str] | None = None,
-) -> dict[str, Any] | None:
-    a_levels = recent_levels(levels, "A_SHAPE", "RESISTANCE")
-    v_levels = recent_levels(levels, "V_SHAPE", "SUPPORT")
-    start = max(1, len(frame) - config.H4_SETUP_LOOKBACK_BARS)
-    for i in range(len(frame) - 1, start - 1, -1):
-        candle = frame.iloc[i]
-        prev = frame.iloc[i - 1]
-        if _iso(candle["datetime"]) in (excluded_times or set()):
-            log.info("%s | WEEKEND_GAP | candle_excluded_from_h4_breakout", _iso(candle["datetime"]))
-            continue
-        if not_before and pd.Timestamp(candle["datetime"]) < pd.Timestamp(not_before):
-            continue
-        if direction == "BULLISH":
-            candidates = list(reversed(a_levels))
-            recent_high = float(frame["high"].iloc[max(0, i - 30) : i].max())
-            candidates.append(
-                KeyLevel("A_SHAPE", "RESISTANCE", recent_high, recent_high, recent_high, i - 1, _iso(prev["datetime"]))
-            )
-            for level in candidates:
-                if level.index >= i:
-                    continue
-                if _bullish_breakout(candle, prev, level.price, eps):
-                    log.info("BODY_BREAKOUT | direction=BULLISH | level=%.8f | candle=%s", level.price, _iso(candle["datetime"]))
-                    return {
-                        "level": level,
-                        "bar_time": _iso(candle["datetime"]),
-                        "close_status": _close_status(candle, "BULLISH", level.price),
-                        "level_flip": "RBS",
-                    }
-        else:
-            candidates = list(reversed(v_levels))
-            recent_low = float(frame["low"].iloc[max(0, i - 30) : i].min())
-            candidates.append(
-                KeyLevel("V_SHAPE", "SUPPORT", recent_low, recent_low, recent_low, i - 1, _iso(prev["datetime"]))
-            )
-            for level in candidates:
-                if level.index >= i:
-                    continue
-                if _bearish_breakout(candle, prev, level.price, eps):
-                    log.info("BODY_BREAKOUT | direction=BEARISH | level=%.8f | candle=%s", level.price, _iso(candle["datetime"]))
-                    return {
-                        "level": level,
-                        "bar_time": _iso(candle["datetime"]),
-                        "close_status": _close_status(candle, "BEARISH", level.price),
-                        "level_flip": "SBR",
-                    }
-    return None
 
 
 def _bullish_sweep(candle: pd.Series, level: float, eps: float) -> bool:
@@ -620,6 +779,8 @@ def _iso(value: Any) -> str:
 def _bars_after(frame: pd.DataFrame, bar_time: str | None) -> pd.DataFrame:
     if not bar_time:
         return frame.iloc[0:0]
+    frame = frame.copy()
+    frame["datetime"] = pd.to_datetime(frame["datetime"], utc=True, errors="coerce")
     stamp = pd.Timestamp(bar_time)
     if stamp.tzinfo is None:
         mask = frame["datetime"] >= pd.Timestamp(bar_time, tz="UTC")

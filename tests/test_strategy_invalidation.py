@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import config
 from state_manager import StateManager
 from strategy import StrategyEngine
 
@@ -108,6 +109,7 @@ class StrategyInvalidationTests(unittest.TestCase):
             direction="BEARISH",
             h4_level_price=1.3530,
             h4_breakout_bar_time="2026-09-10T00:00:00+00:00",
+            retest_allowed=True,
         )
         candles = []
         for index in range(13):
@@ -175,6 +177,92 @@ class StrategyInvalidationTests(unittest.TestCase):
         
         result = self.engine.evaluate("GBPUSD", daily, h4)
         self.assertIsNone(result)
+
+    def test_second_chance_ema_pullback_triggers_when_retest_does_not_happen(self):
+        self.states.update(
+            "GBPUSD",
+            state="WAITING_FOR_RETEST",
+            direction="BULLISH",
+            h4_level_price=1.3500,
+            h4_breakout_bar_time="2026-09-13T17:00:00+00:00",
+            second_chance_allowed=True,
+        )
+
+        candles = []
+        closes = [1.3512, 1.3519, 1.3526, 1.3518, 1.3521, 1.3510, 1.3514, 1.3509, 1.3513, 1.3518]
+        lows = [1.3508, 1.3512, 1.3517, 1.3510, 1.3515, 1.3508, 1.3510, 1.3509, 1.3512, 1.3511]
+        for idx, (close, low) in enumerate(zip(closes, lows)):
+            candles.append({
+                "datetime": pd.Timestamp("2026-09-13T17:00:00+00:00") + pd.Timedelta(hours=int(idx * 4)),
+                "open": close - 0.0004,
+                "high": close + 0.0006,
+                "low": low,
+                "close": close,
+            })
+
+        result = self.engine._handle_retest("GBPUSD", pd.DataFrame(candles), 0.000005)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.alert)
+        self.assertEqual(result.final_signal_status, "SECOND_CHANCE_PULLBACK")
+        self.assertEqual(self.states.get("GBPUSD")["state"], "ALERT_SENT")
+
+    def test_volume_gate_is_off_by_default_and_blocks_weak_breakout_when_enabled(self):
+        self.states.update(
+            "GBPUSD",
+            state="WAITING_FOR_RETEST",
+            direction="BULLISH",
+            h4_level_price=1.3500,
+            h4_breakout_bar_time="2026-09-13T17:00:00+00:00",
+        )
+        config.VOLUME_FILTER_ENABLED = False
+        candles = []
+        for idx in range(10):
+            candles.append({
+                "datetime": pd.Timestamp("2026-09-13T17:00:00+00:00") + pd.Timedelta(hours=int(idx * 4)),
+                "open": 1.3500 + idx * 0.0001,
+                "high": 1.3515 + idx * 0.0001,
+                "low": 1.3492 + idx * 0.0001,
+                "close": 1.3508 + idx * 0.0001,
+                "volume": 1500 + idx * 100,
+            })
+        self.assertTrue(self.engine._volume_gate_passes(pd.DataFrame(candles), "BULLISH"))
+
+        config.VOLUME_FILTER_ENABLED = True
+        weak = []
+        for idx in range(10):
+            weak.append({
+                "datetime": pd.Timestamp("2026-09-13T17:00:00+00:00") + pd.Timedelta(hours=int(idx * 4)),
+                "open": 1.3500 + idx * 0.0001,
+                "high": 1.3515 + idx * 0.0001,
+                "low": 1.3492 + idx * 0.0001,
+                "close": 1.3508 + idx * 0.0001,
+                "volume": 100 + idx * 5,
+            })
+        self.assertFalse(self.engine._volume_gate_passes(pd.DataFrame(weak), "BULLISH"))
+
+    def test_retest_can_be_opted_out_for_a_pair_setup(self):
+        self.states.update(
+            "GBPUSD",
+            state="WAITING_FOR_RETEST",
+            direction="BULLISH",
+            h4_level_price=1.3500,
+            h4_breakout_bar_time="2026-09-13T17:00:00+00:00",
+            retest_allowed=False,
+        )
+        candles = pd.DataFrame([
+            {
+                "datetime": "2026-09-13T21:00:00+00:00",
+                "open": 1.3502,
+                "high": 1.3510,
+                "low": 1.3496,
+                "close": 1.3504,
+            }
+        ])
+        result = self.engine._handle_retest("GBPUSD", candles, 0.000005)
+        self.assertIsNone(result)
+        self.assertEqual(self.states.get("GBPUSD")["state"], "WATCHING")
+        self.assertEqual(self.states.get("GBPUSD")["last_reset_reason"], "user_disabled_retest")
 
 
 if __name__ == "__main__":

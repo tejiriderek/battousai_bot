@@ -145,6 +145,21 @@ class TelegramService:
                     self.state_manager.record_warning_sent(pair, warning_type)
             return self.send_html(text, markup)
 
+        if event_type == "rule_decision":
+            pair = str(event["pair"])
+            rule_name = str(event.get("warning_type", "rule")).replace("_", " ").title()
+            text = (
+                f"<b>⚙️ {pair} - {rule_name.upper()} OPTION</b>\n"
+                f"This setup is considering {rule_name.lower()} logic.\n"
+                f"Do you want to allow it for this pair only, or skip it?"
+            )
+            markup = None
+            if event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
+                markup = _decision_markup(str(event.get("warning_type", "rule")), pair, str(event["setup_id"]))
+                if self.state_manager:
+                    self.state_manager.record_warning_sent(pair, str(event.get("warning_type", "rule")))
+            return self.send_html(text, markup)
+
         if event_type == "state_transition":
             if event.get("to_state") == "ALERT_SENT":
                 return True

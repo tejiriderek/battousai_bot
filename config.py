@@ -46,12 +46,28 @@ RECENT_LEVELS = 4
 DAILY_SETUP_LOOKBACK_BARS = 2
 H4_SETUP_LOOKBACK_BARS = 3
 MAX_H4_BARS_FOR_RETEST = 12
+EMA_PULLBACK_MIN_BARS = int(os.getenv("EMA_PULLBACK_MIN_BARS", "5"))
+EMA_PULLBACK_MAX_BARS = int(os.getenv("EMA_PULLBACK_MAX_BARS", "10"))
+EMA_PULLBACK_SPAN = int(os.getenv("EMA_PULLBACK_SPAN", "20"))
 MAX_DISTANCE_PIPS_FOR_INVALIDATION = float(
     os.getenv("MAX_DISTANCE_PIPS", "100")
 )
 GAP_THRESHOLD_PIPS = float(os.getenv("GAP_THRESHOLD_PIPS", "15"))
 AGING_WARNING_H4_BARS = int(os.getenv("AGING_WARNING_H4_BARS", "12"))
 NEWS_FILTER_ENABLED = os.getenv("NEWS_FILTER_ENABLED", "false").lower() in {
+    "true",
+    "1",
+    "yes",
+}
+VOLUME_FILTER_ENABLED = os.getenv("VOLUME_FILTER_ENABLED", "false").lower() in {
+    "true",
+    "1",
+    "yes",
+}
+VOLUME_FILTER_MIN_MULTIPLIER = float(
+    os.getenv("VOLUME_FILTER_MIN_MULTIPLIER", "1.25")
+)
+RULE_PROMPT_ENABLED = os.getenv("RULE_PROMPT_ENABLED", "true").lower() in {
     "true",
     "1",
     "yes",
