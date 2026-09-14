@@ -18,6 +18,9 @@ TELEGRAM_API = "https://api.telegram.org"
 
 
 class TelegramService:
+    def __init__(self, state_manager=None):
+        self.state_manager = state_manager
+
     def send_alert(self, result: ScanResult) -> bool:
         if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
             log.error("Telegram token or chat id missing; alert not sent")
@@ -114,6 +117,8 @@ class TelegramService:
             markup = None
             if active and event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
                 markup = _decision_markup("gap", pair, str(event["setup_id"]))
+                if self.state_manager:
+                    self.state_manager.record_warning_sent(pair, "gap")
             return self.send_html(text, markup)
 
         if event_type in {"aging_warning", "news_warning"}:
@@ -136,6 +141,8 @@ class TelegramService:
             markup = None
             if event.get("setup_id") and config.TELEGRAM_AUTHORIZED_USER_ID:
                 markup = _decision_markup(warning_type, pair, str(event["setup_id"]))
+                if self.state_manager:
+                    self.state_manager.record_warning_sent(pair, warning_type)
             return self.send_html(text, markup)
 
         if event_type == "state_transition":

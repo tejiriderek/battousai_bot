@@ -58,6 +58,9 @@ EMPTY_PAIR = {
     "last_reset_reason": None,
     "last_reset_details": None,
     "last_reset_at": None,
+    "warning_sent_at": None,
+    "warning_type": None,
+    "warning_acknowledged": False,
 }
 
 
@@ -262,7 +265,7 @@ class StateManager:
                 "news": "news_override",
                 "aging": "aging_override",
             }[warning_type]
-            self.update(pair, **{field: True})
+            self.update(pair, **{field: True, "warning_acknowledged": True})
             self.record_event(
                 {
                     "type": "warning_decision",
@@ -295,6 +298,69 @@ class StateManager:
             }
         )
         return True
+
+    def record_warning_sent(self, pair: str, warning_type: str) -> None:
+        """Record that a warning was sent for this pair."""
+        self.update(pair, warning_sent_at=_now(), warning_type=warning_type, warning_acknowledged=False)
+
+    def should_reprompt_warning(self, pair: str, timeout_minutes: int = 5) -> bool:
+        """Check if a warning should be re-prompted (not acknowledged and timed out)."""
+        current = self.get(pair)
+        if current.get("state") == "WATCHING":
+            return False
+        if current.get("warning_acknowledged"):
+            return False
+        warning_sent_at = current.get("warning_sent_at")
+        if not warning_sent_at:
+            return False
+        try:
+            sent_time = datetime.fromisoformat(warning_sent_at)
+            elapsed = (datetime.now(timezone.utc) - sent_time).total_seconds()
+            return elapsed >= (timeout_minutes * 60)
+        except (ValueError, TypeError):
+            return False
+
+    def auto_apply_warning_timeout(self, pair: str, timeout_minutes: int = 10) -> bool:
+        """Auto-apply YES decision if warning timed out without response."""
+        current = self.get(pair)
+        if current.get("state") == "WATCHING":
+            return False
+        if current.get("warning_acknowledged"):
+            return False
+        warning_sent_at = current.get("warning_sent_at")
+        warning_type = current.get("warning_type")
+        if not warning_sent_at or not warning_type:
+            return False
+        try:
+            sent_time = datetime.fromisoformat(warning_sent_at)
+            elapsed = (datetime.now(timezone.utc) - sent_time).total_seconds()
+            if elapsed >= (timeout_minutes * 60):
+                setup_id = current.get("setup_id")
+                if setup_id:
+                    field = {
+                        "gap": "gap_override",
+                        "news": "news_override",
+                        "aging": "aging_override",
+                    }[warning_type]
+                    self.update(pair, **{field: True, "warning_acknowledged": True})
+                    self.record_event(
+                        {
+                            "type": "warning_decision",
+                            "pair": pair,
+                            "setup_id": setup_id,
+                            "warning_type": warning_type,
+                            "decision": "auto_yes",
+                            "resulting_state": current.get("state"),
+                            "override_applied": True,
+                            "timeout_seconds": int(elapsed),
+                            "at": _now(),
+                        }
+                    )
+                    log.info("Auto-applied YES for %s warning on %s after %d seconds timeout", warning_type, pair, int(elapsed))
+                    return True
+        except (ValueError, TypeError):
+            pass
+        return False
 
 
 def _now() -> str:

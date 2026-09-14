@@ -26,7 +26,7 @@ log = logging.getLogger("battoujutsu")
 
 _running = threading.Event()
 _states = StateManager()
-_telegram = TelegramService()
+_telegram = TelegramService(_states)
 _client = TwelveDataClient()
 _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
@@ -41,6 +41,7 @@ def scanner_loop() -> None:
         cycle_started = time.monotonic()
         try:
             _calendar.refresh_calendar()
+            _check_warning_timeouts()
             _scan_once()
         except Exception:
             log.exception("Scan cycle crashed; continuing")
@@ -51,6 +52,47 @@ def scanner_loop() -> None:
         elapsed = time.monotonic() - cycle_started
         sleep_for = max(config.SCAN_INTERVAL_SECONDS - elapsed, 5.0)
         _sleep(sleep_for)
+
+
+def _check_warning_timeouts() -> None:
+    """Check for warning timeouts and auto-apply or re-prompt as needed."""
+    for pair in config.PAIRS:
+        try:
+            # Auto-apply YES after 10 minutes timeout
+            if _states.auto_apply_warning_timeout(pair, timeout_minutes=10):
+                log.info("Auto-applied YES for warning timeout on %s", pair)
+                _send_pending_events()
+            
+            # Re-prompt after 5 minutes if not acknowledged
+            elif _states.should_reprompt_warning(pair, timeout_minutes=5):
+                current = _states.get(pair)
+                warning_type = current.get("warning_type")
+                setup_id = current.get("setup_id")
+                if warning_type and setup_id and current.get("state") != "WATCHING":
+                    # Re-send the warning event
+                    event = {
+                        "type": f"{warning_type}_warning",
+                        "pair": pair,
+                        "setup_id": setup_id,
+                        "state": current.get("state"),
+                    }
+                    if warning_type == "aging":
+                        event["bars"] = current.get("h4_bars_since_breakout", 0)
+                    elif warning_type == "gap":
+                        event["gap_pips"] = current.get("weekend_gap_pips", 0)
+                        event["friday_close"] = "N/A"
+                        event["monday_open"] = "N/A"
+                        event["active_setup"] = True
+                    elif warning_type == "news":
+                        event["event_name"] = "Unknown"
+                        event["currency"] = "Unknown"
+                        event["event_time_utc"] = None
+                    
+                    _states.record_event(event)
+                    _send_pending_events()
+                    log.info("Re-prompted %s warning for %s", warning_type, pair)
+        except Exception:
+            log.exception("Error checking warning timeout for %s", pair)
 
 
 def _scan_once() -> None:
