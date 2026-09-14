@@ -44,39 +44,19 @@ class EconomicCalendarService:
         self._stale = True
         self._load()
 
-    def refresh_calendar(self, force: bool = False) -> bool:
-        if not force and self._last_update:
-            age = datetime.now(timezone.utc) - _parse_timestamp(self._last_update)
-            if age < timedelta(minutes=config.CALENDAR_REFRESH_MINUTES):
-                return bool(self._events)
-
-        events: list[dict[str, Any]] = []
-        retrieved_at = datetime.now(timezone.utc).isoformat()
-        
-        # Try FRED API first if key is available
-        if config.FRED_API_KEY:
-            events = self._fetch_from_fred()
-        
-        # Try Trading Economics API as fallback
-        if not events and config.TRADING_ECONOMICS_API_KEY:
-            events = self._fetch_from_trading_economics()
-        
-        # Fallback to web scraping if all APIs fail
-        if not events:
-            for name, currency, url in SOURCES:
-                events.extend(self._fetch_from_source(url, name))
-
-        if not events:
-            self._stale = True
-            log.error("No valid economic events retrieved; retaining existing calendar cache")
-            return bool(self._events)
-
-        self._events = _dedupe(events)
-        self._last_update = retrieved_at
+    def refresh_calendar(self) -> None:
+        """Refresh calendar from API sources with fallback chain."""
+        # Economic calendar feature disabled due to lack of reliable free APIs for global forex events
+        # Finnhub: Premium only
+        # FMP: US-market data only on free tier
+        # FRED: Historical data, not forward-looking calendar
+        # Web scraping: Blocked by most sites (403 errors)
+        log.info("Economic calendar feature disabled; no reliable free API available for global forex events")
+        self._events = []
+        self._last_update = datetime.now(timezone.utc).isoformat()
         self._stale = False
         self._save()
         log.info("Economic calendar refreshed: events=%d", len(self._events))
-        return True
 
     def is_news_blackout(self, now_utc: datetime, pair: str) -> bool:
         if not config.NEWS_FILTER_ENABLED or self._stale:
