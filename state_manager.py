@@ -12,6 +12,13 @@ from typing import Any
 
 import config
 
+try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    redis = None
+
 log = logging.getLogger(__name__)
 
 EMPTY_PAIR = {
@@ -59,9 +66,53 @@ class StateManager:
         self.path = path or config.STATE_PATH
         self._lock = threading.Lock()
         self._data: dict[str, Any] = {"pairs": {}, "meta": {}}
+        self._redis_client = None
+        self._redis_key = "battousai:scanner:state"
+        
+        # Initialize Redis if available and configured
+        if REDIS_AVAILABLE and hasattr(config, "UPSTASH_REDIS_URL"):
+            try:
+                self._redis_client = redis.from_url(
+                    config.UPSTASH_REDIS_URL,
+                    decode_responses=True,
+                    socket_timeout=5,
+                    socket_connect_timeout=5
+                )
+                # Test connection
+                self._redis_client.ping()
+                log.info("Redis connection established")
+            except Exception as exc:
+                log.warning("Redis connection failed: %s; falling back to file storage", exc)
+                self._redis_client = None
+        
         self.load()
 
     def load(self) -> None:
+        # Try loading from Redis first
+        if self._redis_client:
+            try:
+                redis_data = self._redis_client.get(self._redis_key)
+                if redis_data:
+                    raw = json.loads(redis_data)
+                    pairs = raw.get("pairs", {})
+                    for pair in config.PAIRS:
+                        if pair in pairs:
+                            current = deepcopy(EMPTY_PAIR)
+                            current.update(pairs[pair])
+                            pairs[pair] = current
+                        else:
+                            log.warning("Pair %s not in Redis state; initializing to WATCHING", pair)
+                            pairs[pair] = deepcopy(EMPTY_PAIR)
+                    raw["pairs"] = pairs
+                    raw.setdefault("meta", {})
+                    raw["meta"].setdefault("events", [])
+                    self._data = raw
+                    log.info("State loaded from Redis")
+                    return
+            except Exception as exc:
+                log.warning("Failed to load from Redis: %s; falling back to file", exc)
+        
+        # Fallback to file storage
         if not self.path.exists():
             self._data = {
                 "pairs": {pair: deepcopy(EMPTY_PAIR) for pair in config.PAIRS},
@@ -84,6 +135,7 @@ class StateManager:
             raw.setdefault("meta", {})
             raw["meta"].setdefault("events", [])
             self._data = raw
+            log.info("State loaded from file")
         except (OSError, json.JSONDecodeError) as exc:
             log.error("State file unreadable (%s); initializing all pairs to WATCHING - ACTIVE SETUPS MAY BE LOST", exc)
             self._data = {
@@ -92,6 +144,18 @@ class StateManager:
             }
 
     def save(self) -> None:
+        # Save to Redis if available
+        if self._redis_client:
+            try:
+                self._redis_client.set(
+                    self._redis_key,
+                    json.dumps(self._data, indent=2, default=str),
+                    ex=86400  # Expire after 24 hours
+                )
+            except Exception as exc:
+                log.warning("Failed to save to Redis: %s", exc)
+        
+        # Always save to file as backup
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self._data, indent=2, default=str), encoding="utf-8")
