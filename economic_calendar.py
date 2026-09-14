@@ -225,20 +225,6 @@ class EconomicCalendarService:
 
     def _fetch_from_fred(self) -> list[dict[str, Any]]:
         try:
-            # FRED releases API for upcoming economic releases
-            url = "https://api.stlouisfed.org/fred/releases"
-            params = {
-                "api_key": config.FRED_API_KEY,
-                "file_type": "json",
-                "limit": 1000,
-                "offset": 0,
-                "order_by": "release_id",
-                "sort_order": "asc"
-            }
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
             events: list[dict[str, Any]] = []
             high_impact_releases = {
                 "FOMC": "Federal Open Market Committee",
@@ -246,7 +232,6 @@ class EconomicCalendarService:
                 "CPIAUCSL": "Consumer Price Index",
                 "GDP": "Gross Domestic Product",
                 "UMCSENT": "Consumer Sentiment",
-                "PAYEMS": "Nonfarm Payroll Employment",
                 "CIVPART": "Labor Force Participation Rate",
                 "UNRATE": "Unemployment Rate",
             }
@@ -295,7 +280,8 @@ class EconomicCalendarService:
                                 "source_url": "https://fred.stlouisfed.org",
                                 "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
                             })
-                except requests.RequestException:
+                except requests.RequestException as exc:
+                    log.warning("FRED release %s failed: %s", release_id, exc)
                     continue
             
             log.info("Retrieved %d high-impact events from FRED API", len(events))
