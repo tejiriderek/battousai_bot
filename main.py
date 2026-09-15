@@ -17,6 +17,7 @@ from economic_calendar import EconomicCalendarService
 from state_manager import StateManager
 from strategy import StrategyEngine
 from telegram_service import TelegramService
+from tradingview_email import TradingViewAlert, TradingViewEmailBridge
 from web_server import create_app
 
 logging.basicConfig(
@@ -32,6 +33,7 @@ _client = TwelveDataClient()
 _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
 _telegram_stop = threading.Event()
+_tradingview_email_bridge: TradingViewEmailBridge | None = None
 
 
 def scanner_loop() -> None:
@@ -270,6 +272,58 @@ def _handle_tradingview_webhook(payload: dict) -> dict:
     }
 
 
+def _handle_tradingview_email(alert: TradingViewAlert) -> bool:
+    state = _states.get(alert.symbol)
+    twelve_price: float | None = None
+    try:
+        candles = _client.fetch_ohlc(alert.symbol, "H4")
+        if not candles.empty:
+            twelve_price = float(candles.iloc[-1]["close"])
+    except Exception as exc:
+        log.warning("TradingView email comparison unavailable for %s: %s", alert.symbol, exc)
+
+    difference = abs(alert.price - twelve_price) if twelve_price is not None else None
+    if twelve_price is None:
+        difference_text = "N/A"
+    elif alert.symbol.endswith("USDT"):
+        difference_text = f"${difference:.2f} / {difference / alert.price * 100:.2f}%"
+    else:
+        multiplier = 100 if alert.symbol.endswith("JPY") else 10000
+        difference_text = f"{difference * multiplier:.1f} pips"
+
+    event = {
+        "type": "tradingview_alert",
+        "pair": alert.symbol,
+        "alert_type": alert.alert_type,
+        "direction": alert.direction,
+        "tradingview_price": alert.price,
+        "twelve_data_price": twelve_price if twelve_price is not None else "N/A",
+        "difference": difference_text,
+        "timeframe": alert.interval,
+        "timestamp": alert.timestamp,
+        "scanner_state": state.get("state"),
+        "daily_setup": state.get("daily_setup"),
+        "daily_level_price": state.get("daily_level_price"),
+        "h4_level_price": state.get("h4_level_price"),
+        "retest_status": state.get("retest_status"),
+        "breakout_status": state.get("breakout_status"),
+        "setup_id": state.get("setup_id"),
+        "warning_type": state.get("warning_type"),
+        "warning_acknowledged": state.get("warning_acknowledged"),
+    }
+    _states.record_event(event)
+    _send_pending_events()
+    log.info(
+        "TradingView email alert processed: %s %s tv=%s twelve=%s diff=%s",
+        alert.symbol,
+        alert.alert_type,
+        alert.price,
+        twelve_price if twelve_price is not None else "N/A",
+        difference_text,
+    )
+    return True
+
+
 def _handle_telegram_update(update: dict) -> None:
     callback = update.get("callback_query") or {}
     callback_id = callback.get("id")
@@ -327,6 +381,9 @@ def main() -> int:
         name="confirmation-reminders",
         daemon=True,
     ).start()
+    global _tradingview_email_bridge
+    _tradingview_email_bridge = TradingViewEmailBridge(_states, _handle_tradingview_email)
+    _tradingview_email_bridge.start()
     if config.TELEGRAM_BOT_TOKEN:
         threading.Thread(
             target=_telegram.poll_updates,
@@ -335,10 +392,17 @@ def main() -> int:
             daemon=True,
         ).start()
 
-    app = create_app(_states.snapshot, _running.is_set, _handle_tradingview_webhook)
+    app = create_app(
+        _states.snapshot,
+        _running.is_set,
+        _handle_tradingview_webhook,
+        _tradingview_email_bridge.status if _tradingview_email_bridge else None,
+    )
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
     _running.clear()
     _telegram_stop.set()
+    if _tradingview_email_bridge:
+        _tradingview_email_bridge.stop()
     return 0
 
 

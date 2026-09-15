@@ -249,6 +249,18 @@ class StateManager:
             self.save()
             return events
 
+    def has_processed_tradingview_email(self, message_id: str) -> bool:
+        with self._lock:
+            return message_id in self._data.setdefault("meta", {}).setdefault("tradingview_email_ids", [])
+
+    def mark_tradingview_email_processed(self, message_id: str) -> None:
+        with self._lock:
+            ids = self._data.setdefault("meta", {}).setdefault("tradingview_email_ids", [])
+            if message_id not in ids:
+                ids.append(message_id)
+                del ids[:-1000]
+                self.save()
+
     def apply_warning_decision(
         self,
         pair: str,

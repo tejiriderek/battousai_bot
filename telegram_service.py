@@ -160,6 +160,37 @@ class TelegramService:
                     self.state_manager.record_warning_sent(pair, str(event.get("warning_type", "rule")))
             return self.send_html(text, markup)
 
+        if event_type == "tradingview_alert":
+            pair = str(event["pair"])
+            alert_type = str(event.get("alert_type", "ALERT"))
+            direction = event.get("direction") or "N/A"
+            tv_price = event.get("tradingview_price", "N/A")
+            twelve_price = event.get("twelve_data_price", "N/A")
+            difference = event.get("difference", "N/A")
+            state = event.get("scanner_state", "UNKNOWN")
+            text = (
+                f"<b>TRADINGVIEW EMAIL ALERT: {pair}</b>\n"
+                f"Type: {_html(alert_type)}\n"
+                f"Direction: {_html(str(direction))}\n"
+                f"TradingView: <code>{_html(str(tv_price))}</code>\n"
+                f"Twelve Data: <code>{_html(str(twelve_price))}</code>\n"
+                f"Difference: <code>{_html(str(difference))}</code>\n"
+                f"Timeframe: {_html(str(event.get('timeframe') or 'N/A'))}\n"
+                f"Alert time: {_html(str(event.get('timestamp') or 'N/A'))}\n"
+                f"Scanner state: <b>{_html(str(state))}</b>\n"
+                f"Daily setup: {_html(str(event.get('daily_setup') or 'N/A'))}\n"
+                f"Daily level: <code>{_html(str(event.get('daily_level_price') or 'N/A'))}</code>\n"
+                f"H4 level: <code>{_html(str(event.get('h4_level_price') or 'N/A'))}</code>\n"
+                f"Retest: {_html(str(event.get('retest_status') or 'N/A'))}\n"
+                f"Breakout: {_html(str(event.get('breakout_status') or 'N/A'))}\n"
+                "Source: TradingView email\n"
+                "Twelve Data scanner remains independent."
+            )
+            markup = None
+            if event.get("setup_id") and event.get("warning_type") and not event.get("warning_acknowledged"):
+                markup = _decision_markup(str(event["warning_type"]), pair, str(event["setup_id"]))
+            return self.send_html(text, markup)
+
         if event_type == "state_transition":
             if event.get("to_state") == "ALERT_SENT":
                 return True

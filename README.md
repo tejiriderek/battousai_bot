@@ -63,6 +63,46 @@ python main.py
 
 Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
 
+## Optional TradingView email bridge
+
+TradingView email alerts are an optional, independent confirmation path. The bridge is disabled by default and uses only Python's standard library IMAP client. It never replaces Twelve Data, changes the strategy, or places trades. When enabled, it reads new TradingView emails in a background thread, validates and deduplicates them in the existing Redis-backed state, compares the alert price with the latest Twelve Data H4 close, and sends a separate Telegram message containing both sources and the current scanner state.
+
+Add these variables to `.env` only when you are ready to test the bridge:
+
+```
+TRADINGVIEW_EMAIL_ENABLED=true
+TRADINGVIEW_EMAIL_HOST=imap.gmail.com
+TRADINGVIEW_EMAIL_PORT=993
+TRADINGVIEW_EMAIL_USERNAME=your-address@gmail.com
+TRADINGVIEW_EMAIL_PASSWORD=your-google-app-password
+TRADINGVIEW_EMAIL_FOLDER=INBOX
+TRADINGVIEW_EMAIL_POLL_INTERVAL=30
+TRADINGVIEW_EMAIL_DRY_RUN=true
+TRADINGVIEW_PROCESS_EXISTING_ON_START=false
+TRADINGVIEW_ALLOWED_SENDER=tradingview.com
+```
+
+For Gmail, enable IMAP if your account offers that setting and use a Google App Password when required by your account. Do not use or commit your normal Gmail password. The connection uses SSL/TLS and credentials are never logged. Start with `TRADINGVIEW_EMAIL_DRY_RUN=true`; emails are parsed and marked as processed but are not sent to Telegram. Set it to `false` only after the parser has been verified.
+
+In TradingView, create an alert for an indicator or condition, enable the **Email notification** option, and paste this exact custom message into the alert's **Message** field:
+
+```
+TV_ALERT|symbol={{exchange}}:{{ticker}}|price={{close}}|time={{time}}|interval={{interval}}|direction=LONG|type=BREAKOUT
+```
+
+TradingView replaces these placeholders in alert messages: `{{exchange}}`, `{{ticker}}`, `{{close}}`, `{{time}}`, and `{{interval}}`. The direction and type are literal values, so make separate alert conditions/messages for SHORT, RETEST, REJECTION, LEVEL_FLIP, SETUP, or INVALIDATION as needed. The parser accepts broker prefixes such as `OANDA:EURUSD` and normalizes them to the configured pair. TradingView plan availability for email alerts can change; email delivery is slower and less direct than a webhook.
+
+Setup checklist:
+
+1. Create the TradingView alert and enable email notification; do not enable webhook.
+2. Confirm the custom message is in the email alert's Message field.
+3. Send or wait for one alert and confirm it reaches the mailbox.
+4. Set the bridge variables in Render, deploy, and check `/status` for `tradingview_email`.
+5. Keep dry-run enabled while checking logs and parser behavior.
+6. Set `TRADINGVIEW_EMAIL_DRY_RUN=false` and redeploy only when ready for Telegram messages.
+
+The email bridge sends a separate Telegram message such as `TRADINGVIEW EMAIL ALERT`, including TradingView price, Twelve Data price, their difference, timeframe, alert time, scanner state, setup ID, and the existing YES/NO prompt when that pair has an unresolved setup decision. It does not silently overwrite Twelve Data state.
+
 ## TradingView webhook
 
 `POST /tradingview-webhook` accepts `pair`, `event`, `tv_price`, `tf`, and an ISO-8601 `time`. It fetches the matching Twelve Data candle for comparison, stores `tv_price` as the official level for that pair, and sends both prices plus their difference to Telegram. A Twelve Data failure does not reject the webhook. The existing 30-minute Twelve Data scanner continues running as a backup.
@@ -109,6 +149,7 @@ Use exchange-qualified symbols that match the feed you want, such as `OANDA:EURU
 
 - State is loaded from Redis key `battousai:scanner:state` when `UPSTASH_REDIS_URL` is configured, with `data/state.json` as a fallback. Keep the same Redis URL across redeploys to preserve in-flight setups.
 - Weekend gaps are checked only while the latest closed forex candle is from Monday; they are not treated as ongoing gaps later in the week.
+- `/status` reports the optional TradingView email bridge connection and last alert status when the application is running.
 - JPY pairs use 0.01 pip size for epsilon only; the retest still targets the stored broken price.
 - This bot does not place trades. It only scans and alerts.
 - Unanswered Telegram confirmations are re-sent with YES/NO buttons every five minutes; after five unanswered prompts, the bot auto-approves with YES.

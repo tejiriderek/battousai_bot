@@ -24,6 +24,7 @@ def create_app(
     snapshot_provider: Callable[[], dict[str, Any]],
     running_provider: Callable[[], bool],
     tradingview_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    tradingview_email_status_provider: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Battoujutsu Forex Scanner", docs_url=None, redoc_url=None)
 
@@ -38,6 +39,8 @@ def create_app(
             "uptime_s": int(time.time() - _started),
             "snapshot": snapshot,
         }
+        if tradingview_email_status_provider:
+            body["tradingview_email"] = tradingview_email_status_provider()
         return JSONResponse(body)
 
     @app.get("/health")
