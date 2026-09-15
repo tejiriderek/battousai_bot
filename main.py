@@ -213,7 +213,7 @@ def _handle_tradingview_webhook(payload: dict) -> dict:
         candles = _client.fetch_ohlc(pair, timeframe)
         if not candles.empty:
             twelve_price = float(candles.iloc[-1]["close"])
-    except (DataServiceError, KeyError, ValueError, TypeError) as exc:
+    except Exception as exc:
         log.warning("TradingView comparison unavailable for %s: %s", pair, exc)
 
     state = _states.get(pair)

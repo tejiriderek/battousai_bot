@@ -1,7 +1,7 @@
 """HTTP surface for health checks and TradingView webhook ingestion."""
 
 # TradingView Pine Script template:
-# // @version=5
+# // @version=6
 # // indicator("Battousai TV Sender", overlay=true)
 # // isBreakout = ta.crossover(close, ta.highest(close, 20)[1])
 # // if isBreakout
