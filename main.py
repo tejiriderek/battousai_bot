@@ -155,6 +155,12 @@ def _scan_once() -> None:
         try:
             daily = _client.fetch_ohlc(pair, "D1")
             h4 = _client.fetch_ohlc(pair, "H4")
+            if not h4.empty:
+                _states.update(
+                    pair,
+                    last_twelve_data_price=float(h4.iloc[-1]["close"]),
+                    last_twelve_data_at=datetime.now(timezone.utc).isoformat(),
+                )
             result = _strategy.evaluate(pair, daily, h4)
             if result and result.alert:
                 sent = _telegram.send_alert(result)
@@ -274,13 +280,14 @@ def _handle_tradingview_webhook(payload: dict) -> dict:
 
 def _handle_tradingview_email(alert: TradingViewAlert) -> bool:
     state = _states.get(alert.symbol)
-    twelve_price: float | None = None
-    try:
-        candles = _client.fetch_ohlc(alert.symbol, "H4")
-        if not candles.empty:
-            twelve_price = float(candles.iloc[-1]["close"])
-    except Exception as exc:
-        log.warning("TradingView email comparison unavailable for %s: %s", alert.symbol, exc)
+    twelve_price = state.get("last_twelve_data_price")
+    if twelve_price is None:
+        try:
+            candles = _client.fetch_ohlc(alert.symbol, "H4")
+            if not candles.empty:
+                twelve_price = float(candles.iloc[-1]["close"])
+        except Exception as exc:
+            log.warning("TradingView email comparison unavailable for %s: %s", alert.symbol, exc)
 
     difference = abs(alert.price - twelve_price) if twelve_price is not None else None
     if twelve_price is None:
@@ -298,6 +305,7 @@ def _handle_tradingview_email(alert: TradingViewAlert) -> bool:
         "direction": alert.direction,
         "tradingview_price": alert.price,
         "twelve_data_price": twelve_price if twelve_price is not None else "N/A",
+        "twelve_data_at": state.get("last_twelve_data_at"),
         "difference": difference_text,
         "timeframe": alert.interval,
         "timestamp": alert.timestamp,

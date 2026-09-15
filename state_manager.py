@@ -43,6 +43,8 @@ EMPTY_PAIR = {
     "h4_bars_since_breakout": 0,
     "last_daily_bar": None,
     "last_h4_bar": None,
+    "last_twelve_data_price": None,
+    "last_twelve_data_at": None,
     "last_alert_key": None,
     "last_alert_at": None,
     "updated_at": None,

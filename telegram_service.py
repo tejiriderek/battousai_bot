@@ -175,6 +175,7 @@ class TelegramService:
                 f"TradingView: <code>{_html(str(tv_price))}</code>\n"
                 f"Twelve Data: <code>{_html(str(twelve_price))}</code>\n"
                 f"Difference: <code>{_html(str(difference))}</code>\n"
+                f"Twelve Data updated: {_html(str(event.get('twelve_data_at') or 'N/A'))}\n"
                 f"Timeframe: {_html(str(event.get('timeframe') or 'N/A'))}\n"
                 f"Alert time: {_html(str(event.get('timestamp') or 'N/A'))}\n"
                 f"Scanner state: <b>{_html(str(state))}</b>\n"
