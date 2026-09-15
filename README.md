@@ -63,6 +63,16 @@ python main.py
 
 Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
 
+## TradingView webhook
+
+`POST /tradingview-webhook` accepts `pair`, `event`, `tv_price`, `tf`, and an ISO-8601 `time`. It fetches the matching Twelve Data candle for comparison, stores `tv_price` as the official level for that pair, and sends both prices plus their difference to Telegram. A Twelve Data failure does not reject the webhook. The existing 30-minute Twelve Data scanner continues running as a backup.
+
+For a free TradingView account, use one Pine script on one chart with `request.security()` calls for the seven configured symbols, then create one alert using **Any alert() function call** and point its webhook URL to:
+
+`https://<your-render-service>.onrender.com/tradingview-webhook`
+
+Use exchange-qualified symbols that match the feed you want, such as `OANDA:EURUSD` for forex and `BINANCE:BTCUSDT` / `BINANCE:ETHUSDT` for crypto. TradingView plan limits and alert quotas can change, so confirm the current limit in the account UI. A single multi-symbol script is preferable to creating multiple accounts.
+
 ## Deploy on Render
 
 1. Create a GitHub repository and push this project (`.env` is gitignored).
@@ -97,7 +107,8 @@ Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
 
 ## Notes
 
-- State lives in `data/state.json` (ephemeral on free Render; a restart can lose in-flight setups but will not re-send an alert if the file is still there).
+- State is loaded from Redis key `battousai:scanner:state` when `UPSTASH_REDIS_URL` is configured, with `data/state.json` as a fallback. Keep the same Redis URL across redeploys to preserve in-flight setups.
+- Weekend gaps are checked only while the latest closed forex candle is from Monday; they are not treated as ongoing gaps later in the week.
 - JPY pairs use 0.01 pip size for epsilon only; the retest still targets the stored broken price.
 - This bot does not place trades. It only scans and alerts.
 - Unanswered Telegram confirmations are re-sent with YES/NO buttons every five minutes; after five unanswered prompts, the bot auto-approves with YES.

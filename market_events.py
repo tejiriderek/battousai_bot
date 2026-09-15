@@ -36,6 +36,8 @@ def detect_weekend_gap(
     candles = frame.copy()
     candles["datetime"] = pd.to_datetime(candles["datetime"], utc=True, errors="coerce")
     candles = candles.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+    if candles.empty or candles.iloc[-1]["datetime"].weekday() != 0:
+        return None
     monday_indexes = [
         index
         for index, value in enumerate(candles["datetime"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import threading
 import time
@@ -180,6 +181,95 @@ def _send_pending_events() -> None:
             log.exception("Unable to deliver Telegram event: %s", event.get("type"))
 
 
+def _handle_tradingview_webhook(payload: dict) -> dict:
+    pair = str(payload.get("pair", "")).upper().strip()
+    event = str(payload.get("event", "")).lower().strip()
+    timeframe = str(payload.get("tf", "H4")).upper().strip()
+    raw_price = payload.get("tv_price")
+    event_time = str(payload.get("time", "")).strip()
+    if pair not in config.PAIRS:
+        raise ValueError("pair must be one of the configured pairs")
+    if event not in {"breakout", "retest", "continuation", "rejection"}:
+        raise ValueError("event must be breakout, retest, continuation, or rejection")
+    if raw_price is None:
+        raise ValueError("tv_price is required")
+    try:
+        tv_price = float(raw_price)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("tv_price must be numeric") from exc
+    if not math.isfinite(tv_price) or tv_price <= 0:
+        raise ValueError("tv_price must be a positive finite number")
+    if timeframe not in config.TIMEFRAMES:
+        raise ValueError("tf must be D1 or H4")
+    if not event_time:
+        raise ValueError("time is required")
+    try:
+        event_time = datetime.fromisoformat(event_time.replace("Z", "+00:00")).isoformat()
+    except ValueError as exc:
+        raise ValueError("time must be an ISO-8601 timestamp") from exc
+
+    twelve_price: float | None = None
+    try:
+        candles = _client.fetch_ohlc(pair, timeframe)
+        if not candles.empty:
+            twelve_price = float(candles.iloc[-1]["close"])
+    except (DataServiceError, KeyError, ValueError, TypeError) as exc:
+        log.warning("TradingView comparison unavailable for %s: %s", pair, exc)
+
+    state = _states.get(pair)
+    changes = {"h4_level_price": tv_price}
+    if event == "breakout":
+        changes["h4_breakout_bar_time"] = event_time
+    elif event == "retest":
+        changes["retest_bar_time"] = event_time
+    _states.update(pair, **changes)
+    state = _states.get(pair)
+
+    difference = abs(tv_price - twelve_price) if twelve_price is not None else None
+    if twelve_price is None:
+        diff_text = "N/A"
+        large_divergence = False
+    elif pair.endswith("USDT"):
+        diff_text = f"${difference:.2f} / {difference / tv_price * 100:.2f}%"
+        large_divergence = difference > (50 if pair == "BTCUSDT" else 10)
+    else:
+        pips = difference * (100 if pair.endswith("JPY") else 10000)
+        diff_text = f"{pips:.1f} pips"
+        large_divergence = pips > 15
+
+    text = (
+        f"<b>TRADINGVIEW {pair} {event.upper()} | {timeframe}</b>\n\n"
+        f"TradingView: <code>{tv_price}</code>\n"
+        f"TwelveData: <code>{twelve_price if twelve_price is not None else 'N/A'}</code>\n"
+        f"Diff: {diff_text}\n\n"
+        "<b>Using TradingView price as official level.</b>\n"
+        f"Setup ID: <code>{state.get('setup_id') or 'N/A'}</code>\n"
+        f"Daily Level: <code>{state.get('daily_level_price') or 'N/A'}</code>"
+    )
+    if large_divergence:
+        text += "\n\n<b>WARNING: Large feed divergence - check broker!</b>"
+    sent = _telegram.send_html(text)
+    log.info(
+        "TRADINGVIEW_WEBHOOK pair=%s event=%s tv_price=%s twelve_price=%s diff=%s sent=%s",
+        pair,
+        event,
+        tv_price,
+        twelve_price if twelve_price is not None else "N/A",
+        diff_text,
+        sent,
+    )
+    return {
+        "status": "accepted",
+        "pair": pair,
+        "event": event,
+        "tv_price": tv_price,
+        "twelve_price": twelve_price if twelve_price is not None else "N/A",
+        "diff": diff_text,
+        "setup_id": state.get("setup_id"),
+        "telegram_sent": sent,
+    }
+
+
 def _handle_telegram_update(update: dict) -> None:
     callback = update.get("callback_query") or {}
     callback_id = callback.get("id")
@@ -245,7 +335,7 @@ def main() -> int:
             daemon=True,
         ).start()
 
-    app = create_app(_states.snapshot, _running.is_set)
+    app = create_app(_states.snapshot, _running.is_set, _handle_tradingview_webhook)
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
     _running.clear()
     _telegram_stop.set()

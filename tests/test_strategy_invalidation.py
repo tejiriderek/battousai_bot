@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 import config
+from market_events import detect_weekend_gap
 from state_manager import StateManager
 from strategy import StrategyEngine
 
@@ -177,6 +178,15 @@ class StrategyInvalidationTests(unittest.TestCase):
         
         result = self.engine.evaluate("GBPUSD", daily, h4)
         self.assertIsNone(result)
+
+    def test_weekend_gap_is_not_reported_after_monday(self):
+        frame = pd.DataFrame([
+            {"datetime": "2026-09-11T00:00:00+00:00", "open": 1.1000, "high": 1.1010, "low": 1.0990, "close": 1.1000},
+            {"datetime": "2026-09-14T00:00:00+00:00", "open": 1.1030, "high": 1.1040, "low": 1.1020, "close": 1.1035},
+            {"datetime": "2026-09-15T00:00:00+00:00", "open": 1.1035, "high": 1.1050, "low": 1.1025, "close": 1.1040},
+        ])
+
+        self.assertIsNone(detect_weekend_gap(frame, "EURUSD", "D1"))
 
     def test_second_chance_ema_pullback_triggers_when_retest_does_not_happen(self):
         self.states.update(
