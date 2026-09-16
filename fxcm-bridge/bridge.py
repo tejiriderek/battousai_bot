@@ -35,7 +35,7 @@ def main() -> None:
                 fx.login(
                     username,
                     password,
-                    os.getenv("FXCM_SERVER", ""),
+                    os.getenv("FXCM_SERVER") or "https://www.fxcorporate.com/Hosts.jsp",
                     os.getenv("FXCM_CONNECTION", "demo"),
                     "",
                     "",

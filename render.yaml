@@ -53,12 +53,40 @@ services:
       - key: CRYPTO_VALIDATION_RECONNECT_SECONDS
         value: "5"
       - key: FXCM_BRIDGE_ENABLED
-        value: "false"
+        value: "true"
       - key: FXCM_ACCOUNT_TYPE
         value: "demo"
       - key: FXCM_STALE_SECONDS
         value: "90"
       - key: FXCM_MAX_PRICE_DISCREPANCY_PCT
         value: "0.1"
+      - key: FXCM_BRIDGE_SHARED_SECRET
+        sync: false
+  - type: worker
+    name: fxcm-bridge
+    runtime: python
+    rootDir: fxcm-bridge
+    plan: 0.5c-512mb
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bridge.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.7.10"
+      - key: FXCM_ENABLED
+        value: "true"
+      - key: FXCM_USERNAME
+        sync: false
+      - key: FXCM_PASSWORD
+        sync: false
+      - key: FXCM_CONNECTION
+        value: "demo"
+      - key: FXCM_SERVER
+        value: ""
+      - key: FXCM_POLL_SECONDS
+        value: "30"
+      - key: SCANNER_RECEIVER_URL
+        value: "https://battousai-bot.onrender.com/fxcm/market-data"
       - key: FXCM_BRIDGE_SHARED_SECRET
         sync: false
