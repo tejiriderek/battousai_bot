@@ -14,6 +14,7 @@ import uvicorn
 import config
 from data_service import DataServiceError, TwelveDataClient
 from economic_calendar import EconomicCalendarService
+from fxcm_validation import FXCMValidationStore
 from crypto_validation import CryptoValidationService
 from state_manager import StateManager
 from strategy import StrategyEngine
@@ -29,11 +30,19 @@ log = logging.getLogger("battoujutsu")
 
 _running = threading.Event()
 _states = StateManager()
-_telegram = TelegramService(_states)
 _client = TwelveDataClient()
 _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
-_crypto_validation = CryptoValidationService(_states.snapshot)
+_twelve_market_lock = threading.Lock()
+_twelve_market_data: dict[str, dict] = {}
+_fxcm_validation = FXCMValidationStore(lambda: _primary_snapshot())
+_crypto_validation = CryptoValidationService(
+    lambda: _primary_snapshot(),
+    lambda source, connected, error: _handle_crypto_provider_status(
+        source, connected, error
+    ),
+)
+_telegram = TelegramService(_states, _crypto_validation.snapshot)
 _telegram_stop = threading.Event()
 _tradingview_email_bridge: TradingViewEmailBridge | None = None
 
@@ -157,6 +166,7 @@ def _scan_once() -> None:
         try:
             daily = _client.fetch_ohlc(pair, "D1")
             h4 = _client.fetch_ohlc(pair, "H4")
+            _record_twelve_market_data(pair, daily, h4)
             if not h4.empty:
                 _states.update(
                     pair,
@@ -189,6 +199,49 @@ def _send_pending_events() -> None:
             _telegram.send_event(event)
         except Exception:
             log.exception("Unable to deliver Telegram event: %s", event.get("type"))
+
+
+def _record_twelve_market_data(pair: str, daily, h4) -> None:
+    with _twelve_market_lock:
+        _twelve_market_data[pair] = {
+            "D1": _frame_candle(daily),
+            "H4": _frame_candle(h4),
+        }
+
+
+def _frame_candle(frame) -> dict | None:
+    if frame.empty:
+        return None
+    candle = frame.iloc[-1]
+    result = {
+        "timestamp": candle["datetime"].isoformat(),
+        "open": float(candle["open"]),
+        "high": float(candle["high"]),
+        "low": float(candle["low"]),
+        "close": float(candle["close"]),
+        "completed": True,
+    }
+    if "volume" in candle and candle["volume"] == candle["volume"]:
+        result["volume"] = float(candle["volume"])
+    return result
+
+
+def _primary_snapshot() -> dict:
+    snapshot = _states.snapshot()
+    with _twelve_market_lock:
+        snapshot["market_data"] = {
+            pair: dict(timeframes) for pair, timeframes in _twelve_market_data.items()
+        }
+    return snapshot
+
+
+def _handle_crypto_provider_status(source: str, connected: bool, error: str | None) -> None:
+    state = "RECOVERED" if connected else "UNAVAILABLE"
+    detail = "public market-data connection restored" if connected else (error or "connection lost")
+    _telegram.send_html(
+        f"<b>{source.upper()} VALIDATION {state}</b>\n"
+        f"{detail}. Twelve Data strategy remains authoritative and unchanged."
+    )
 
 
 def _handle_tradingview_webhook(payload: dict) -> dict:
@@ -372,9 +425,17 @@ def _sleep(seconds: float) -> None:
 
 
 def _status_snapshot() -> dict:
-    snapshot = _states.snapshot()
+    snapshot = _primary_snapshot()
     snapshot["crypto_validation"] = _crypto_validation.snapshot()
+    snapshot["fxcm_validation"] = _fxcm_validation.snapshot()
     return snapshot
+
+
+def _handle_fxcm_market_data(payload: dict, secret: str | None) -> dict:
+    accepted, message = _fxcm_validation.accept(payload, secret)
+    if not accepted:
+        raise ValueError(message)
+    return {"status": "accepted"}
 
 
 def main() -> int:
@@ -414,6 +475,7 @@ def main() -> int:
         _running.is_set,
         _handle_tradingview_webhook,
         _tradingview_email_bridge.status if _tradingview_email_bridge else None,
+        _handle_fxcm_market_data,
     )
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
     _running.clear()

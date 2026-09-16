@@ -31,6 +31,34 @@ services:
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: CRYPTO_BINANCE_VALIDATION_ENABLED
-        value: "false"
+        value: "true"
       - key: CRYPTO_COINBASE_VALIDATION_ENABLED
+        value: "true"
+      - key: CRYPTO_BINANCE_WS_URL
+        value: "wss://data-stream.binance.vision/ws"
+      - key: CRYPTO_BINANCE_REST_URL
+        value: "https://data-api.binance.vision"
+      - key: CRYPTO_BINANCE_MAX_PRICE_DISCREPANCY_PCT
+        value: "1.0"
+      - key: CRYPTO_COINBASE_MAX_PRICE_DISCREPANCY_PCT
+        value: "1.0"
+      - key: CRYPTO_BINANCE_STALE_SECONDS
+        value: "60"
+      - key: CRYPTO_COINBASE_STALE_SECONDS
+        value: "60"
+      - key: CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS
+        value: "10"
+      - key: CRYPTO_VALIDATION_CANDLE_REFRESH_SECONDS
+        value: "60"
+      - key: CRYPTO_VALIDATION_RECONNECT_SECONDS
+        value: "5"
+      - key: FXCM_BRIDGE_ENABLED
         value: "false"
+      - key: FXCM_ACCOUNT_TYPE
+        value: "demo"
+      - key: FXCM_STALE_SECONDS
+        value: "90"
+      - key: FXCM_MAX_PRICE_DISCREPANCY_PCT
+        value: "0.1"
+      - key: FXCM_BRIDGE_SHARED_SECRET
+        sync: false

@@ -1,8 +1,9 @@
 import unittest
+import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from crypto_validation import CryptoValidationService
+from crypto_validation import CryptoValidationService, _aggregate_coinbase_h4
 
 
 class CryptoValidationTests(unittest.TestCase):
@@ -51,6 +52,19 @@ class CryptoValidationTests(unittest.TestCase):
         snapshot = self.service.snapshot()
         self.assertIsNone(snapshot["binance"]["symbols"]["BTCUSDT"]["price"])
         self.assertIsNone(snapshot["coinbase"]["symbols"]["BTC-USD"]["price"])
+
+    def test_coinbase_h4_is_aggregated_from_four_completed_utc_hours(self):
+        start = (int(time.time()) // 14400 - 2) * 14400
+        rows = [
+            [start + offset * 3600, 99, 101 + offset, 100 + offset, 100.5 + offset, 10]
+            for offset in range(4)
+        ]
+        candle = _aggregate_coinbase_h4(rows)
+        self.assertIsNotNone(candle)
+        self.assertEqual(candle["open"], 100)
+        self.assertEqual(candle["high"], 104)
+        self.assertEqual(candle["low"], 99)
+        self.assertEqual(candle["close"], 103.5)
 
 
 if __name__ == "__main__":

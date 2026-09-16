@@ -97,7 +97,7 @@ CRYPTO_COINBASE_VALIDATION_ENABLED = os.getenv(
     "CRYPTO_COINBASE_VALIDATION_ENABLED", "false"
 ).lower() in {"true", "1", "yes"}
 CRYPTO_BINANCE_WS_URL = os.getenv(
-    "CRYPTO_BINANCE_WS_URL", "wss://stream.binance.com:9443/ws"
+    "CRYPTO_BINANCE_WS_URL", "wss://data-stream.binance.vision/ws"
 ).strip()
 CRYPTO_COINBASE_WS_URL = os.getenv(
     "CRYPTO_COINBASE_WS_URL", "wss://advanced-trade-ws.coinbase.com"
@@ -119,6 +119,27 @@ CRYPTO_BINANCE_MAX_CONNECTION_SECONDS = int(
 )
 CRYPTO_VALIDATION_RECONNECT_SECONDS = int(
     os.getenv("CRYPTO_VALIDATION_RECONNECT_SECONDS", "5")
+)
+CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS = float(
+    os.getenv("CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS", "10")
+)
+CRYPTO_VALIDATION_CANDLE_REFRESH_SECONDS = int(
+    os.getenv("CRYPTO_VALIDATION_CANDLE_REFRESH_SECONDS", "60")
+)
+CRYPTO_BINANCE_REST_URL = os.getenv(
+    "CRYPTO_BINANCE_REST_URL", "https://data-api.binance.vision"
+).rstrip("/")
+CRYPTO_COINBASE_REST_URL = os.getenv(
+    "CRYPTO_COINBASE_REST_URL", "https://api.exchange.coinbase.com"
+).rstrip("/")
+FXCM_BRIDGE_ENABLED = os.getenv("FXCM_BRIDGE_ENABLED", "false").lower() in {
+    "true", "1", "yes"
+}
+FXCM_BRIDGE_SHARED_SECRET = os.getenv("FXCM_BRIDGE_SHARED_SECRET", "")
+FXCM_ACCOUNT_TYPE = os.getenv("FXCM_ACCOUNT_TYPE", "demo").strip()
+FXCM_STALE_SECONDS = int(os.getenv("FXCM_STALE_SECONDS", "90"))
+FXCM_MAX_PRICE_DISCREPANCY_PCT = float(
+    os.getenv("FXCM_MAX_PRICE_DISCREPANCY_PCT", "0.1")
 )
 REQUEST_GAP_SECONDS = 15.0
 API_TIMEOUT_SECONDS = 20.0

@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any, Callable
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 _started = time.time()
@@ -25,6 +25,7 @@ def create_app(
     running_provider: Callable[[], bool],
     tradingview_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     tradingview_email_status_provider: Callable[[], dict[str, Any]] | None = None,
+    fxcm_handler: Callable[[dict[str, Any], str | None], dict[str, Any]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Battoujutsu Forex Scanner", docs_url=None, redoc_url=None)
 
@@ -46,6 +47,19 @@ def create_app(
     @app.get("/health")
     def health() -> JSONResponse:
         return JSONResponse({"status": "ok", "scanner_running": bool(running_provider())})
+
+    @app.post("/fxcm/market-data")
+    def fxcm_market_data(
+        request: Request,
+        payload: dict[str, Any] = Body(default={}),
+    ) -> JSONResponse:
+        if fxcm_handler is None:
+            return JSONResponse({"error": "FXCM bridge is not configured"}, status_code=503)
+        try:
+            result = fxcm_handler(payload, request.headers.get("x-fxcm-bridge-secret"))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=401)
+        return JSONResponse(result)
 
     @app.post("/tradingview-webhook")
     def tradingview_webhook(payload: dict[str, Any] = Body(default={})) -> JSONResponse:

@@ -18,14 +18,16 @@ TELEGRAM_API = "https://api.telegram.org"
 
 
 class TelegramService:
-    def __init__(self, state_manager=None):
+    def __init__(self, state_manager=None, validation_provider=None):
         self.state_manager = state_manager
+        self.validation_provider = validation_provider
 
     def send_alert(self, result: ScanResult) -> bool:
         if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
             log.error("Telegram token or chat id missing; alert not sent")
             return False
-        return self.send_html(format_alert(result))
+        validation = self.validation_provider() if self.validation_provider else None
+        return self.send_html(format_alert(result, validation))
 
     def send_html(self, text: str, reply_markup: dict[str, Any] | None = None) -> bool:
         url = f"{TELEGRAM_API}/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -258,10 +260,10 @@ class TelegramService:
                 time.sleep(5)
 
 
-def format_alert(result: ScanResult) -> str:
+def format_alert(result: ScanResult, validation: dict[str, Any] | None = None) -> str:
     price = f"{result.key_level_price:.5f}".rstrip("0").rstrip(".")
     arrow = "BULLISH" if result.direction == "BULLISH" else "BEARISH"
-    return (
+    text = (
         "<b>BATTOJUTSU PRICE-ACTION ALERT</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"<b>PAIR:</b> {result.pair}\n"
@@ -280,6 +282,22 @@ def format_alert(result: ScanResult) -> str:
         "━━━━━━━━━━━━━━━━━━\n"
         f"<i>State: {result.state}</i>"
     )
+    if validation and result.pair.endswith("USDT"):
+        text += "\n━━━━━━━━━━━━━━━━━━\n<b>PROVIDER VALIDATION</b>\n"
+        text += _format_validation_provider("binance", validation.get("binance"))
+        text += _format_validation_provider("coinbase", validation.get("coinbase"))
+    return text
+
+
+def _format_validation_provider(source: str, details: dict[str, Any] | None) -> str:
+    if not details or not details.get("enabled"):
+        return f"{source.title()}: 🔴 UNAVAILABLE\n"
+    if not details.get("connected") or details.get("stale"):
+        return f"{source.title()}: 🔴 UNAVAILABLE\n"
+    lines = [f"{source.title()}: CONNECTED"]
+    for product, symbol in details.get("symbols", {}).items():
+        lines.append(f"{symbol}: {details.get('symbols', {}).get(product, {}).get('price', 'N/A')}")
+    return "\n".join(lines) + "\n"
 
 
 def _html(value: str) -> str:

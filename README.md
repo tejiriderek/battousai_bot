@@ -78,7 +78,13 @@ CRYPTO_BINANCE_STALE_SECONDS=60
 CRYPTO_COINBASE_STALE_SECONDS=60
 ```
 
-The `/status` response includes `snapshot.crypto_validation`. Binance uses `BTCUSDT` and `ETHUSDT` on `wss://stream.binance.com:9443/ws`; Coinbase uses `BTC-USD` and `ETH-USD` on `wss://advanced-trade-ws.coinbase.com`. Each feed reconnects independently and is marked stale or disconnected without affecting the scanner.
+The `/status` response includes `snapshot.crypto_validation`. Binance uses `BTCUSDT` and `ETHUSDT` on Binance's market-data-only hosts (`wss://data-stream.binance.vision/ws` and `https://data-api.binance.vision`); Coinbase uses `BTC-USD` and `ETH-USD` on `wss://advanced-trade-ws.coinbase.com`. Each feed reconnects independently and is marked stale or disconnected without affecting the scanner.
+
+## FXCM reference bridge
+
+FXCM is an independent forex reference feed. The Render process does not load the legacy ForexConnect SDK or store FXCM login credentials. Run `fxcm-bridge/bridge.py` on a compatible Python/ForexConnect host and configure its `.env` from `fxcm-bridge/README.md`. Set the same random `FXCM_BRIDGE_SHARED_SECRET` in the Render environment and bridge environment, then set `FXCM_BRIDGE_ENABLED=true` in Render. The receiver is `POST /fxcm/market-data` and diagnostics appear under `snapshot.fxcm_validation`.
+
+FXCM mappings are `EURUSD -> EUR/USD`, `GBPUSD -> GBP/USD`, `USDJPY -> USD/JPY`, `EURAUD -> EUR/AUD`, and `NZDCAD -> NZD/CAD`. FXCM data is comparison-only and cannot alter the Twelve Data strategy, setup state, setup IDs, or alerts.
 
 ## Optional TradingView email bridge
 

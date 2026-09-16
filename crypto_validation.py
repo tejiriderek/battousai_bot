@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+import requests
 import websockets
 
 import config
@@ -33,8 +34,13 @@ _SOURCE_DEFINITIONS = {
 
 
 class CryptoValidationService:
-    def __init__(self, primary_snapshot_provider: Callable[[], dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        primary_snapshot_provider: Callable[[], dict[str, Any]],
+        connection_callback: Callable[[str, bool, str | None], None] | None = None,
+    ) -> None:
         self._primary_snapshot_provider = primary_snapshot_provider
+        self._connection_callback = connection_callback
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._threads: list[threading.Thread] = []
@@ -48,6 +54,7 @@ class CryptoValidationService:
                     product: {
                         "price": None,
                         "timestamp": None,
+                        "ohlc": {"D1": None, "H4": None},
                     }
                     for product in definition["symbols"].values()
                 },
@@ -68,6 +75,14 @@ class CryptoValidationService:
             )
             self._threads.append(thread)
             thread.start()
+            candle_thread = threading.Thread(
+                target=self._run_candle_source,
+                args=(source,),
+                name=f"crypto-{source}-candles",
+                daemon=True,
+            )
+            self._threads.append(candle_thread)
+            candle_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -112,18 +127,29 @@ class CryptoValidationService:
                     )
                 symbol_status["price_difference_pct"] = difference
                 symbol_status["validation_status"] = validation_status
+                symbol_status["ohlc_comparison"] = _compare_ohlc(
+                    symbol_status.get("ohlc", {}),
+                    primary.get("market_data", {}).get(pair, {}),
+                )
             result[source] = source_status
         return result
 
     def _run_source(self, source: str) -> None:
         while not self._stop_event.is_set():
+            error_name = None
             try:
                 asyncio.run(self._consume(source))
             except Exception as exc:
+                error_name = type(exc).__name__
                 self._set_error(source, exc)
                 log.warning("[%s] validation feed disconnected: %s", source.title(), exc)
-            self._set_connected(source, False)
+            self._set_connected(source, False, error_name)
             self._stop_event.wait(config.CRYPTO_VALIDATION_RECONNECT_SECONDS)
+
+    def _run_candle_source(self, source: str) -> None:
+        while not self._stop_event.is_set():
+            self._safe_refresh_ohlc(source)
+            self._stop_event.wait(config.CRYPTO_VALIDATION_CANDLE_REFRESH_SECONDS)
 
     async def _consume(self, source: str) -> None:
         if source == "binance":
@@ -145,16 +171,17 @@ class CryptoValidationService:
                     }
                 )
             )
-            self._set_connected("binance", True)
             connected_at = time.monotonic()
+            next_candle_refresh = 0.0
             while not self._stop_event.is_set():
                 if time.monotonic() - connected_at >= config.CRYPTO_BINANCE_MAX_CONNECTION_SECONDS:
                     return
                 try:
                     raw = await asyncio.wait_for(socket.recv(), timeout=1)
                 except asyncio.TimeoutError:
-                    continue
-                self._handle_binance_message(raw)
+                    raw = None
+                if raw is not None:
+                    self._handle_binance_message(raw)
 
     async def _consume_coinbase(self) -> None:
         definition = _SOURCE_DEFINITIONS["coinbase"]
@@ -164,13 +191,13 @@ class CryptoValidationService:
             products = list(definition["symbols"].values())
             await socket.send(json.dumps({"type": "subscribe", "product_ids": products, "channel": "ticker"}))
             await socket.send(json.dumps({"type": "subscribe", "channel": "heartbeats", "product_ids": products}))
-            self._set_connected("coinbase", True)
             while not self._stop_event.is_set():
                 try:
                     raw = await asyncio.wait_for(socket.recv(), timeout=1)
                 except asyncio.TimeoutError:
-                    continue
-                self._handle_coinbase_message(raw)
+                    raw = None
+                if raw is not None:
+                    self._handle_coinbase_message(raw)
 
     def _handle_binance_message(self, raw: str | bytes) -> None:
         try:
@@ -197,8 +224,8 @@ class CryptoValidationService:
             log.warning("[Coinbase] ignored malformed market-data message")
 
     def _record(self, source: str, product: str, price: float, timestamp: datetime) -> None:
+        self._set_connected(source, True)
         with self._lock:
-            self._status[source]["connected"] = True
             self._status[source]["last_message_at"] = datetime.now(timezone.utc).isoformat()
             self._status[source]["last_error"] = None
             self._status[source]["symbols"][product].update(
@@ -206,9 +233,64 @@ class CryptoValidationService:
                 timestamp=timestamp.isoformat(),
             )
 
-    def _set_connected(self, source: str, connected: bool) -> None:
+    def _refresh_ohlc(self, source: str) -> None:
+        definition = _SOURCE_DEFINITIONS[source]
+        if source == "binance":
+            for product in definition["symbols"].values():
+                for timeframe, interval in (("D1", "1d"), ("H4", "4h")):
+                    response = requests.get(
+                        f"{config.CRYPTO_BINANCE_REST_URL}/api/v3/klines",
+                        params={"symbol": product, "interval": interval, "limit": 3},
+                        timeout=config.CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS,
+                    )
+                    response.raise_for_status()
+                    rows = response.json()
+                    candle = _latest_completed_binance_candle(rows)
+                    if candle:
+                        self._record_ohlc(source, product, timeframe, candle)
+            return
+
+        granularity = {"D1": 86400, "H4": 3600}
+        for product in definition["symbols"].values():
+            for timeframe, seconds in granularity.items():
+                response = requests.get(
+                    f"{config.CRYPTO_COINBASE_REST_URL}/products/{product}/candles",
+                    params={"granularity": seconds, "limit": 12 if timeframe == "H4" else 3},
+                    timeout=config.CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                rows = response.json()
+                candle = (
+                    _latest_completed_coinbase_candle(rows, seconds)
+                    if timeframe == "D1"
+                    else _aggregate_coinbase_h4(rows)
+                )
+                if candle:
+                    self._record_ohlc(source, product, timeframe, candle)
+
+    def _safe_refresh_ohlc(self, source: str) -> None:
+        try:
+            self._refresh_ohlc(source)
+        except Exception as exc:
+            self._set_error(source, exc)
+            log.warning("[%s] candle refresh failed: %s", source.title(), exc)
+
+    def _record_ohlc(
+        self, source: str, product: str, timeframe: str, candle: dict[str, Any]
+    ) -> None:
         with self._lock:
+            self._status[source]["symbols"][product]["ohlc"][timeframe] = candle
+            self._status[source]["last_error"] = None
+
+    def _set_connected(self, source: str, connected: bool, error: str | None = None) -> None:
+        changed = False
+        with self._lock:
+            changed = self._status[source]["connected"] != connected
             self._status[source]["connected"] = connected
+            if error:
+                self._status[source]["last_error"] = error
+        if changed and self._connection_callback:
+            self._connection_callback(source, connected, error)
 
     def _set_error(self, source: str, error: Exception) -> None:
         with self._lock:
@@ -240,3 +322,94 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _latest_completed_binance_candle(rows: list[list[Any]]) -> dict[str, Any] | None:
+    now_ms = int(time.time() * 1000)
+    completed = [row for row in rows if len(row) >= 7 and int(row[6]) <= now_ms]
+    if not completed:
+        return None
+    row = max(completed, key=lambda item: int(item[0]))
+    return {
+        "timestamp": datetime.fromtimestamp(int(row[0]) / 1000, timezone.utc).isoformat(),
+        "open": float(row[1]),
+        "high": float(row[2]),
+        "low": float(row[3]),
+        "close": float(row[4]),
+        "volume": float(row[5]),
+        "completed": True,
+    }
+
+
+def _latest_completed_coinbase_candle(
+    rows: list[list[Any]], granularity: int
+) -> dict[str, Any] | None:
+    now = int(time.time())
+    completed = [row for row in rows if len(row) >= 6 and int(row[0]) + granularity <= now]
+    if not completed:
+        return None
+    row = max(completed, key=lambda item: int(item[0]))
+    return {
+        "timestamp": datetime.fromtimestamp(int(row[0]), timezone.utc).isoformat(),
+        "open": float(row[3]),
+        "high": float(row[2]),
+        "low": float(row[1]),
+        "close": float(row[4]),
+        "volume": float(row[5]),
+        "completed": True,
+    }
+
+
+def _aggregate_coinbase_h4(rows: list[list[Any]]) -> dict[str, Any] | None:
+    now = int(time.time())
+    hours = [
+        row for row in rows
+        if len(row) >= 6 and int(row[0]) + 3600 <= now
+    ]
+    if not hours:
+        return None
+    hours.sort(key=lambda item: int(item[0]))
+    groups: dict[int, list[list[Any]]] = {}
+    for row in hours:
+        start = (int(row[0]) // 14400) * 14400
+        groups.setdefault(start, []).append(row)
+    complete_groups = [rows_for_group for rows_for_group in groups.values() if len(rows_for_group) == 4]
+    if not complete_groups:
+        return None
+    group = max(complete_groups, key=lambda items: int(items[0][0]))
+    group.sort(key=lambda item: int(item[0]))
+    return {
+        "timestamp": datetime.fromtimestamp(int(group[0][0]), timezone.utc).isoformat(),
+        "open": float(group[0][3]),
+        "high": max(float(row[2]) for row in group),
+        "low": min(float(row[1]) for row in group),
+        "close": float(group[-1][4]),
+        "volume": sum(float(row[5]) for row in group),
+        "completed": True,
+    }
+
+
+def _compare_ohlc(
+    provider_ohlc: dict[str, Any], primary_ohlc: dict[str, Any]
+) -> dict[str, Any]:
+    comparison: dict[str, Any] = {}
+    for timeframe in ("D1", "H4"):
+        provider = provider_ohlc.get(timeframe)
+        primary = primary_ohlc.get(timeframe)
+        if not provider or not primary:
+            comparison[timeframe] = {"status": "UNAVAILABLE"}
+            continue
+        differences = {
+            field: float(provider[field]) - float(primary[field])
+            for field in ("open", "high", "low", "close")
+        }
+        provider_time = datetime.fromisoformat(provider["timestamp"])
+        primary_time = datetime.fromisoformat(primary["timestamp"])
+        comparison[timeframe] = {
+            "status": "COMPARED",
+            "timestamp_difference_seconds": int(
+                (provider_time - primary_time).total_seconds()
+            ),
+            "ohlc_difference": differences,
+        }
+    return comparison
