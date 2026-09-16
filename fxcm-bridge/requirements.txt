@@ -1,3 +1,4 @@
 forexconnect==1.6.43
 requests>=2.32,<3
 python-dotenv>=1.0,<2
+flask>=3.0,<4

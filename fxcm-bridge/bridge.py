@@ -5,16 +5,40 @@ from __future__ import annotations
 import logging
 import os
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
+from flask import Flask, jsonify
 
 load_dotenv()
 
 log = logging.getLogger("fxcm_bridge")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 PAIRS = {"EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY", "EURAUD": "EUR/AUD", "NZDCAD": "NZD/CAD"}
+
+# Flask app for health checks
+app = Flask(__name__)
+bridge_running = False
+bridge_thread = None
+
+
+@app.route("/health")
+def health():
+    """Health check endpoint for UptimeRobot."""
+    return jsonify({"status": "ok", "bridge_running": bridge_running})
+
+
+def bridge_worker():
+    """Run the FXCM bridge in a background thread."""
+    global bridge_running
+    bridge_running = True
+    try:
+        main()
+    except Exception as e:
+        log.error("Bridge worker failed: %s", e)
+        bridge_running = False
 
 
 def main() -> None:
@@ -97,4 +121,10 @@ def history_candle(fx, instrument: str, timeframe: str) -> dict | None:
 
 
 if __name__ == "__main__":
-    main()
+    # Start bridge worker in background thread
+    bridge_thread = threading.Thread(target=bridge_worker, daemon=True)
+    bridge_thread.start()
+    
+    # Start Flask server (Render provides PORT env var)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
