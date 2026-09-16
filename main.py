@@ -14,6 +14,7 @@ import uvicorn
 import config
 from data_service import DataServiceError, TwelveDataClient
 from economic_calendar import EconomicCalendarService
+from crypto_validation import CryptoValidationService
 from state_manager import StateManager
 from strategy import StrategyEngine
 from telegram_service import TelegramService
@@ -32,6 +33,7 @@ _telegram = TelegramService(_states)
 _client = TwelveDataClient()
 _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
+_crypto_validation = CryptoValidationService(_states.snapshot)
 _telegram_stop = threading.Event()
 _tradingview_email_bridge: TradingViewEmailBridge | None = None
 
@@ -369,6 +371,12 @@ def _sleep(seconds: float) -> None:
         time.sleep(min(0.5, end - time.monotonic()))
 
 
+def _status_snapshot() -> dict:
+    snapshot = _states.snapshot()
+    snapshot["crypto_validation"] = _crypto_validation.snapshot()
+    return snapshot
+
+
 def main() -> int:
     missing = [
         name
@@ -392,6 +400,7 @@ def main() -> int:
     global _tradingview_email_bridge
     _tradingview_email_bridge = TradingViewEmailBridge(_states, _handle_tradingview_email)
     _tradingview_email_bridge.start()
+    _crypto_validation.start()
     if config.TELEGRAM_BOT_TOKEN:
         threading.Thread(
             target=_telegram.poll_updates,
@@ -401,7 +410,7 @@ def main() -> int:
         ).start()
 
     app = create_app(
-        _states.snapshot,
+        _status_snapshot,
         _running.is_set,
         _handle_tradingview_webhook,
         _tradingview_email_bridge.status if _tradingview_email_bridge else None,
@@ -409,6 +418,7 @@ def main() -> int:
     uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
     _running.clear()
     _telegram_stop.set()
+    _crypto_validation.stop()
     if _tradingview_email_bridge:
         _tradingview_email_bridge.stop()
     return 0

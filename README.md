@@ -63,6 +63,23 @@ python main.py
 
 Open `http://127.0.0.1:8080/status`. You should see `"scanner_running": true`.
 
+## Optional crypto validation feeds
+
+Twelve Data remains the only source used by the strategy. Binance Spot and Coinbase Advanced Trade public ticker feeds are optional, diagnostic-only references for BTC and ETH. They require no API keys and cannot change setups, alerts, or persisted state.
+
+Enable them in `.env` when needed:
+
+```
+CRYPTO_BINANCE_VALIDATION_ENABLED=true
+CRYPTO_COINBASE_VALIDATION_ENABLED=true
+CRYPTO_BINANCE_MAX_PRICE_DISCREPANCY_PCT=1.0
+CRYPTO_COINBASE_MAX_PRICE_DISCREPANCY_PCT=1.0
+CRYPTO_BINANCE_STALE_SECONDS=60
+CRYPTO_COINBASE_STALE_SECONDS=60
+```
+
+The `/status` response includes `snapshot.crypto_validation`. Binance uses `BTCUSDT` and `ETHUSDT` on `wss://stream.binance.com:9443/ws`; Coinbase uses `BTC-USD` and `ETH-USD` on `wss://advanced-trade-ws.coinbase.com`. Each feed reconnects independently and is marked stale or disconnected without affecting the scanner.
+
 ## Optional TradingView email bridge
 
 TradingView email alerts are an optional, independent confirmation path. The bridge is disabled by default and uses only Python's standard library IMAP client. It never replaces Twelve Data, changes the strategy, or places trades. When enabled, it reads new TradingView emails in a background thread, validates and deduplicates them in the existing Redis-backed state, compares the alert price with the latest Twelve Data H4 close, and sends a separate Telegram message containing both sources and the current scanner state.
