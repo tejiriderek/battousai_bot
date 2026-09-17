@@ -55,6 +55,8 @@ class TelegramService:
 
     def send_event(self, event: dict[str, Any]) -> bool:
         event_type = event.get("type")
+        if event_type == "fxcm_ohlc_mismatch":
+            return self.send_html(_format_fxcm_ohlc_mismatch(event))
         if event_type == "setup_invalidated":
             pair = str(event["pair"])
             previous_state = str(event.get("previous_state", "UNKNOWN"))
@@ -370,6 +372,35 @@ def _html(value: str) -> str:
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+    )
+
+
+def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
+    pair = _html(str(event.get("pair") or "UNKNOWN"))
+    timeframe = _html(str(event.get("timeframe") or "UNKNOWN"))
+    fields = event.get("fields") or []
+    differences = event.get("ohlc_difference_pips") or {}
+    twelve = event.get("twelve_data") or {}
+    fxcm = event.get("fxcm") or {}
+    rows = ["Field       TwelveData       FXCM          Delta (pips)"]
+    for field in ("open", "high", "low", "close"):
+        twelve_value = twelve.get(field)
+        fxcm_value = fxcm.get(field)
+        delta = differences.get(field)
+        rows.append(
+            f"{field.title():<10} {str(twelve_value if twelve_value is not None else 'null'):<16} "
+            f"{str(fxcm_value if fxcm_value is not None else 'null'):<13} "
+            f"{str(round(delta, 2)) if delta is not None else 'null'}"
+        )
+    table = _html("\n".join(rows))
+    return (
+        f"<b>FXCM OHLC MISMATCH: {pair} {timeframe}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"<pre>{table}</pre>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Fields: {_html(', '.join(str(field) for field in fields))}\n"
+        f"Tolerance: {_html(str(event.get('tolerance_pips', 'null')))} pips\n"
+        "Provider values are the actual candles used for comparison."
     )
 
 

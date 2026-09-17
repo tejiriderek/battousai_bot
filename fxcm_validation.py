@@ -152,6 +152,8 @@ class FXCMValidationStore:
                         "fields": result.get("mismatch_fields", []),
                         "tolerance_pips": result.get("tolerance_pips"),
                         "ohlc_difference_pips": result.get("ohlc_difference_pips", {}),
+                        "twelve_data": result.get("twelve_data"),
+                        "fxcm": result.get("fxcm"),
                         "at": datetime.now(timezone.utc).isoformat(),
                     }
                 )
@@ -232,6 +234,8 @@ def _compare_timeframes(
             "normalized_timestamp_difference_seconds": normalized_timestamp_difference,
             "left_timestamp": left.get("timestamp"),
             "right_timestamp": right.get("timestamp"),
+            "fxcm": left,
+            "twelve_data": right,
             "ohlc_difference": differences,
             "ohlc_difference_pips": difference_pips,
             "disagreement_fields": disagreements,

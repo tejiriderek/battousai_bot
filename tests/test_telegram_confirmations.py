@@ -100,6 +100,26 @@ class TelegramConfirmationTests(unittest.TestCase):
             config.TELEGRAM_CHAT_ID = original_chat_id
             main._states = original_states
 
+    def test_fxcm_mismatch_event_is_sent_as_comparison_table(self):
+        service = TelegramService()
+        event = {
+            "type": "fxcm_ohlc_mismatch",
+            "pair": "EURUSD",
+            "timeframe": "D1",
+            "fields": ["open"],
+            "tolerance_pips": 2.0,
+            "ohlc_difference_pips": {"open": 5.0},
+            "twelve_data": {"open": 1.15, "high": 1.16, "low": 1.14, "close": 1.15},
+            "fxcm": {"open": 1.1495, "high": 1.16, "low": 1.14, "close": 1.15},
+        }
+        with patch.object(service, "send_html", return_value=True) as send_html:
+            self.assertTrue(service.send_event(event))
+        text = send_html.call_args.args[0]
+        self.assertIn("FXCM OHLC MISMATCH: EURUSD D1", text)
+        self.assertIn("TwelveData", text)
+        self.assertIn("FXCM", text)
+        self.assertIn("1.1495", text)
+
 
 if __name__ == "__main__":
     unittest.main()

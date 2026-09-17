@@ -93,6 +93,25 @@ class StateManager:
         
         self.load()
 
+    def _retire_legacy_alert_sent(self) -> None:
+        if not config.RETIRE_LEGACY_ALERT_SENT:
+            return
+        for pair in config.PAIRS:
+            current = self._data["pairs"].get(pair, {})
+            if current.get("state") != "ALERT_SENT":
+                continue
+            self.reset(
+                pair,
+                reason="legacy_alert_sent_retired",
+                details={
+                    "alert_key": current.get("last_alert_key"),
+                    "alert_at": current.get("last_alert_at"),
+                },
+                last_alert_key=current.get("last_alert_key"),
+                last_alert_at=current.get("last_alert_at"),
+            )
+            log.warning("Retired legacy ALERT_SENT state for %s", pair)
+
     def load(self) -> None:
         # Try loading from Redis first
         if self._redis_client:
@@ -113,6 +132,7 @@ class StateManager:
                     raw.setdefault("meta", {})
                     raw["meta"].setdefault("events", [])
                     self._data = raw
+                    self._retire_legacy_alert_sent()
                     log.info("State loaded from Redis")
                     return
             except Exception as exc:
@@ -141,6 +161,7 @@ class StateManager:
             raw.setdefault("meta", {})
             raw["meta"].setdefault("events", [])
             self._data = raw
+            self._retire_legacy_alert_sent()
             log.info("State loaded from file")
         except (OSError, json.JSONDecodeError) as exc:
             log.error("State file unreadable (%s); initializing all pairs to WATCHING - ACTIVE SETUPS MAY BE LOST", exc)

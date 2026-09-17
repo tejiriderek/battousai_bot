@@ -64,6 +64,8 @@ services:
         value: "2.0"
       - key: FXCM_OHLC_MISMATCH_MULTIPLIER
         value: "3.0"
+      - key: RETIRE_LEGACY_ALERT_SENT
+        value: "false"
       - key: FXCM_BRIDGE_SHARED_SECRET
         sync: false
   - type: worker

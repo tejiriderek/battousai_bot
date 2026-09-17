@@ -145,6 +145,9 @@ class FXCMValidationTests(unittest.TestCase):
         self.assertEqual(events[0]["type"], "fxcm_ohlc_mismatch")
         self.assertEqual(second["pairs"]["EURUSD"]["ohlc_comparison"]["D1"]["status"], "MISMATCH")
 
+        self.assertEqual(events[0]["twelve_data"]["open"], 1.09)
+        self.assertEqual(events[0]["fxcm"]["open"], 1.091)
+
 
 if __name__ == "__main__":
     unittest.main()
