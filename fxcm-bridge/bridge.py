@@ -126,30 +126,77 @@ def collect_snapshot(session) -> dict:
 
 def get_history_candle(session, instrument: str, timeframe: str) -> dict | None:
     try:
-        # Get historical data using LiveHistory
-        from forexconnect import LiveHistory, LiveHistoryCreator
-        history = LiveHistoryCreator.create(session)
-        
-        # Map timeframe to ForexConnect period
-        period_map = {'D1': 'D1', 'H4': 'H4'}
-        period = period_map.get(timeframe, 'D1')
-        
-        # Get historical candles
-        candles = history.get_history(instrument, period, 1)
-        if candles is None or len(candles) == 0:
+        import pandas as pd
+
+        period = timeframe if timeframe in {"D1", "H4"} else "D1"
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(days=10 if period == "D1" else 3)
+        try:
+            history = session.get_history(instrument, period, start, now)
+        except AttributeError:
+            from forexconnect import LiveHistoryCreator
+
+            history = LiveHistoryCreator.create(session).get_history(instrument, period, 3)
+        if history is None or len(history) == 0:
             return None
-        
-        candle = candles[-1]
+
+        frame = history if isinstance(history, pd.DataFrame) else pd.DataFrame(history)
+        if frame.empty:
+            return None
+        frame = frame.sort_values(frame.columns[0]).reset_index(drop=True)
+
+        def value(row, names):
+            for name in names:
+                if name in frame.columns and row[name] is not None:
+                    return row[name]
+            return None
+
+        duration = pd.Timedelta(days=1 if period == "D1" else 4 / 24)
+        completed = []
+        for _, row in frame.iterrows():
+            timestamp = _serialize_timestamp(value(row, ("Date", "date", "Time", "time")))
+            parsed = pd.Timestamp(timestamp) if timestamp else None
+            if parsed is not None and parsed.tzinfo is None:
+                parsed = parsed.tz_localize("UTC")
+            if parsed is not None and parsed.to_pydatetime() + duration.to_pytimedelta() <= now:
+                completed.append((parsed, row))
+        if not completed:
+            return None
+        candle_time, candle = completed[-1]
+        open_value = value(candle, ("BidOpen", "Open", "open"))
+        high_value = value(candle, ("BidHigh", "High", "high"))
+        low_value = value(candle, ("BidLow", "Low", "low"))
+        close_value = value(candle, ("BidClose", "Close", "close"))
+        if any(value is None for value in (open_value, high_value, low_value, close_value)):
+            values = list(candle.values)
+            if len(values) < 5:
+                return None
+            open_value, high_value, low_value, close_value = values[1:5]
         return {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "open": float(candle['open']),
-            "high": float(candle['high']),
-            "low": float(candle['low']),
-            "close": float(candle['close']),
+            "timestamp": candle_time.isoformat(),
+            "open": float(open_value),
+            "high": float(high_value),
+            "low": float(low_value),
+            "close": float(close_value),
             "completed": True,
         }
     except Exception as e:
         log.warning("Failed to get history for %s %s: %s", instrument, timeframe, e)
+        return None
+
+
+def _serialize_timestamp(value) -> str | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        import pandas as pd
+
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC").isoformat()
+    except (TypeError, ValueError):
+        log.warning("Could not parse FXCM candle timestamp: %r", value)
         return None
 
 

@@ -6,7 +6,7 @@ import hmac
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import config
@@ -197,6 +197,38 @@ def _compare_timeframes(
         if not left or not right:
             result[timeframe] = {"status": "UNAVAILABLE"}
             continue
+        periods = _period_comparison(left, right, timeframe)
+        log.info(
+            "FXCM OHLC periods for %s %s; FXCM=%s TwelveData=%s",
+            pair,
+            timeframe,
+            periods["fxcm_period"],
+            periods["twelve_data_period"],
+        )
+        if periods["status"] != "SAME_PERIOD":
+            result[timeframe] = {
+                "status": "BOUNDARY_MISMATCH",
+                "period_status": periods["status"],
+                "tolerance_pips": config.FXCM_OHLC_TOLERANCE_PIPS,
+                "timestamp_difference_seconds": _timestamp_difference_seconds(
+                    left.get("timestamp"), right.get("timestamp")
+                ),
+                "normalized_timestamp_difference_seconds": _normalized_timestamp_difference_seconds(
+                    left.get("timestamp"), right.get("timestamp"), timeframe
+                ),
+                "fxcm_period": periods["fxcm_period"],
+                "twelve_data_period": periods["twelve_data_period"],
+                "fxcm": left,
+                "twelve_data": right,
+            }
+            log.warning(
+                "FXCM OHLC candle-boundary mismatch for %s %s; FXCM=%s TwelveData=%s",
+                pair,
+                timeframe,
+                periods["fxcm_period"],
+                periods["twelve_data_period"],
+            )
+            continue
         differences = {
             field: float(left[field]) - float(right[field])
             for field in ("open", "high", "low", "close")
@@ -220,20 +252,17 @@ def _compare_timeframes(
             status = "WARN"
         else:
             status = "OK"
-        raw_timestamp_difference = _timestamp_difference_seconds(
-            left.get("timestamp"), right.get("timestamp")
-        )
-        normalized_timestamp_difference = _normalized_timestamp_difference_seconds(
-            left.get("timestamp"), right.get("timestamp"), timeframe
-        )
         result[timeframe] = {
             "status": status,
+            "period_status": periods["status"],
             "tolerance_pips": tolerance_pips,
             "mismatch_multiplier": config.FXCM_OHLC_MISMATCH_MULTIPLIER,
-            "timestamp_difference_seconds": raw_timestamp_difference,
-            "normalized_timestamp_difference_seconds": normalized_timestamp_difference,
+            "timestamp_difference_seconds": 0,
+            "normalized_timestamp_difference_seconds": 0,
             "left_timestamp": left.get("timestamp"),
             "right_timestamp": right.get("timestamp"),
+            "fxcm_period": periods["fxcm_period"],
+            "twelve_data_period": periods["twelve_data_period"],
             "fxcm": left,
             "twelve_data": right,
             "ohlc_difference": differences,
@@ -252,6 +281,36 @@ def _compare_timeframes(
                 difference_pips,
             )
     return result
+
+
+def _period_comparison(
+    fxcm: dict[str, Any], primary: dict[str, Any], timeframe: str
+) -> dict[str, Any]:
+    duration = timedelta(days=1 if timeframe == "D1" else 4 / 24)
+    fxcm_start = _parse_utc_timestamp(fxcm.get("timestamp"))
+    primary_start = _parse_utc_timestamp(primary.get("timestamp"))
+    fxcm_period = _period_details(fxcm_start, duration)
+    primary_period = _period_details(primary_start, duration)
+    if not fxcm_start or not primary_start:
+        return {
+            "status": "INVALID_PERIOD",
+            "fxcm_period": fxcm_period,
+            "twelve_data_period": primary_period,
+        }
+    return {
+        "status": "SAME_PERIOD" if fxcm_start == primary_start else "DIFFERENT_PERIOD",
+        "fxcm_period": fxcm_period,
+        "twelve_data_period": primary_period,
+    }
+
+
+def _period_details(start: datetime | None, duration: timedelta) -> dict[str, str | None]:
+    if start is None:
+        return {"start_utc": None, "end_utc": None}
+    return {
+        "start_utc": start.isoformat(),
+        "end_utc": (start + duration).isoformat(),
+    }
 
 
 def _parse_utc_timestamp(value: Any) -> datetime | None:
@@ -280,11 +339,10 @@ def _normalized_timestamp_difference_seconds(
     right_timestamp = _parse_utc_timestamp(right)
     if not left_timestamp or not right_timestamp:
         return None
-    if timeframe == "D1":
-        # FXCM stamps the same forex trading day at 21:00 UTC while Twelve Data
-        # labels it at 00:00 UTC. Compare the shared calendar-day label only.
+    if timeframe == "D1" and left_timestamp.hour == 21:
+        # FXCM's 21:00 UTC trading-day boundary is different from Twelve Data's
+        # 00:00 UTC calendar-day boundary; this is diagnostic only, not equality.
         left_timestamp = left_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
-        right_timestamp = right_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
     return int((left_timestamp - right_timestamp).total_seconds())
 
 

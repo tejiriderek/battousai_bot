@@ -87,7 +87,8 @@ class FXCMValidationTests(unittest.TestCase):
                 "H4": None,
             }
             comparison = _compare_timeframes("EURUSD", base, self.primary["market_data"]["EURUSD"])
-            self.assertEqual(comparison["D1"]["status"], "OK")
+            self.assertEqual(comparison["D1"]["status"], "BOUNDARY_MISMATCH")
+            self.assertEqual(comparison["D1"]["period_status"], "DIFFERENT_PERIOD")
             self.assertEqual(comparison["D1"]["timestamp_difference_seconds"], 75600)
             self.assertEqual(comparison["D1"]["normalized_timestamp_difference_seconds"], 0)
             self.assertEqual(comparison["H4"]["status"], "UNAVAILABLE")
@@ -96,17 +97,42 @@ class FXCMValidationTests(unittest.TestCase):
             comparison = _compare_timeframes(
                 "EURUSD", {"D1": warn}, self.primary["market_data"]["EURUSD"]
             )
-            self.assertEqual(comparison["D1"]["status"], "WARN")
-            self.assertAlmostEqual(
-                comparison["D1"]["ohlc_difference_pips"]["high"], 2.5
-            )
+            self.assertEqual(comparison["D1"]["status"], "BOUNDARY_MISMATCH")
 
             mismatch = {**base["D1"], "open": 1.091}
             comparison = _compare_timeframes(
                 "EURUSD", {"D1": mismatch}, self.primary["market_data"]["EURUSD"]
             )
-            self.assertEqual(comparison["D1"]["status"], "MISMATCH")
-            self.assertEqual(comparison["D1"]["mismatch_fields"], ["open"])
+            self.assertEqual(comparison["D1"]["status"], "BOUNDARY_MISMATCH")
+
+            same_period = {**base["D1"], "timestamp": "2026-09-16T00:00:00+00:00", "high": 1.11025}
+            comparison = _compare_timeframes(
+                "EURUSD", {"D1": same_period}, self.primary["market_data"]["EURUSD"]
+            )
+            self.assertEqual(comparison["D1"]["status"], "WARN")
+            self.assertAlmostEqual(comparison["D1"]["ohlc_difference_pips"]["high"], 2.5)
+
+            h4_primary = {
+                "H4": {
+                    "timestamp": "2026-09-17T13:00:00+00:00",
+                    "open": 1.14,
+                    "high": 1.15,
+                    "low": 1.13,
+                    "close": 1.145,
+                }
+            }
+            h4_fxcm = {
+                "H4": {
+                    "timestamp": "2026-09-17T13:00:00+00:00",
+                    "open": 1.1401,
+                    "high": 1.15,
+                    "low": 1.13,
+                    "close": 1.145,
+                }
+            }
+            comparison = _compare_timeframes("EURUSD", h4_fxcm, h4_primary)
+            self.assertEqual(comparison["H4"]["status"], "OK")
+            self.assertEqual(comparison["H4"]["period_status"], "SAME_PERIOD")
 
     def test_mismatch_event_is_recorded_once_per_candle(self):
         events = []
@@ -124,7 +150,7 @@ class FXCMValidationTests(unittest.TestCase):
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "ohlc": {
                                 "D1": {
-                                    "timestamp": "2026-09-16T21:00:00+00:00",
+                                    "timestamp": "2026-09-16T00:00:00+00:00",
                                     "open": 1.091,
                                     "high": 1.11,
                                     "low": 1.08,
