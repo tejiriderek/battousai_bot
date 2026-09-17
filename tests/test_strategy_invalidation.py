@@ -215,7 +215,8 @@ class StrategyInvalidationTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.alert)
         self.assertEqual(result.final_signal_status, "SECOND_CHANCE_PULLBACK")
-        self.assertEqual(self.states.get("GBPUSD")["state"], "ALERT_SENT")
+        self.assertEqual(self.states.get("GBPUSD")["state"], "CONTINUATION_CONFIRMED")
+        self.assertTrue(self.states.get("GBPUSD")["alert_pending"])
 
     def test_volume_gate_is_off_by_default_and_blocks_weak_breakout_when_enabled(self):
         self.states.update(

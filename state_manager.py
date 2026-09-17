@@ -47,6 +47,8 @@ EMPTY_PAIR = {
     "last_twelve_data_at": None,
     "last_alert_key": None,
     "last_alert_at": None,
+    "alert_pending": False,
+    "pending_alert_key": None,
     "updated_at": None,
     "setup_id": None,
     "gap_override": False,

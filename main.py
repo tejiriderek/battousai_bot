@@ -186,15 +186,16 @@ def _scan_once() -> None:
                 )
                 if sent:
                     completed = _states.get(pair)
+                    alert_at = datetime.now(timezone.utc).isoformat()
                     _states.reset(
                         pair,
                         reason="setup_completed",
                         details={
-                            "alert_key": completed.get("last_alert_key"),
-                            "alert_at": completed.get("last_alert_at"),
+                            "alert_key": completed.get("pending_alert_key"),
+                            "alert_at": alert_at,
                         },
-                        last_alert_key=completed.get("last_alert_key"),
-                        last_alert_at=completed.get("last_alert_at"),
+                        last_alert_key=completed.get("pending_alert_key"),
+                        last_alert_at=alert_at,
                     )
             _send_pending_events()
         except DataServiceError as exc:

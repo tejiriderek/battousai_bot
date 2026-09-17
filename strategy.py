@@ -36,6 +36,7 @@ class ScanResult:
     final_signal_status: str
     state: str
     alert: bool = False
+    alert_key: str | None = None
 
 
 class StrategyEngine:
@@ -60,6 +61,8 @@ class StrategyEngine:
 
         daily_bar = _iso(daily.iloc[-1]["datetime"])
         h4_bar = _iso(h4.iloc[-1]["datetime"])
+        if state.get("alert_pending") and state.get("state") == "CONTINUATION_CONFIRMED":
+            return self._emit_alert(pair)
         if state.get("last_daily_bar") == daily_bar and state.get("last_h4_bar") == h4_bar:
             return None
 
@@ -512,12 +515,13 @@ class StrategyEngine:
             final_signal_status="SECOND_CHANCE_PULLBACK",
             state="ALERT_SENT",
             alert=True,
+            alert_key=alert_key,
         )
         self.states.update(
             pair,
-            state="ALERT_SENT",
-            last_alert_key=alert_key,
-            last_alert_at=datetime.now(timezone.utc).isoformat(),
+            state="CONTINUATION_CONFIRMED",
+            alert_pending=True,
+            pending_alert_key=alert_key,
         )
         return result
 
@@ -665,12 +669,13 @@ class StrategyEngine:
             final_signal_status="CONTINUATION_CONFIRMED",
             state="ALERT_SENT",
             alert=True,
+            alert_key=alert_key,
         )
         self.states.update(
             pair,
-            state="ALERT_SENT",
-            last_alert_key=alert_key,
-            last_alert_at=datetime.now(timezone.utc).isoformat(),
+            state="CONTINUATION_CONFIRMED",
+            alert_pending=True,
+            pending_alert_key=alert_key,
         )
         return result
 
