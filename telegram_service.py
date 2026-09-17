@@ -55,6 +55,11 @@ class TelegramService:
 
     def send_event(self, event: dict[str, Any]) -> bool:
         event_type = event.get("type")
+        if event_type == "fxcm_conflict":
+            markup = _decision_markup("fxcm_conflict", str(event["pair"]), str(event["setup_id"]))
+            if self.state_manager:
+                self.state_manager.record_warning_sent(str(event["pair"]), "fxcm_conflict")
+            return self.send_html(_format_fxcm_ohlc_mismatch(event), markup)
         if event_type == "fxcm_ohlc_mismatch":
             return self.send_html(_format_fxcm_ohlc_mismatch(event))
         if event_type == "setup_invalidated":
@@ -222,7 +227,8 @@ class TelegramService:
             if decision == "YES":
                 text = f"<b>{pair} - CONTINUE</b>\nThe {event.get('warning_type')} warning was accepted for this setup."
             else:
-                text = f"<b>{pair} - SETUP ENDED</b>\nYou chose not to continue after the {event.get('warning_type')} warning."
+                ending = "SETUP SKIPPED" if event.get("warning_type") == "fxcm_conflict" else "SETUP ENDED"
+                text = f"<b>{pair} - {ending}</b>\nYou chose not to continue after the {event.get('warning_type')} warning."
             return self.send_html(text)
 
         return True
@@ -393,8 +399,48 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
             f"{str(round(delta, 2)) if delta is not None else 'null'}"
         )
     table = _html("\n".join(rows))
+    repeated = event.get("repeated_observations")
+    is_review = bool(
+        event.get("requires_review")
+        or event.get("maximum_difference_pips") is not None
+        or repeated
+    )
+    if is_review:
+        direction = str(event.get("direction") or "the current direction").replace("BULLISH", "BUY").replace("BEARISH", "SELL")
+        explanation = (
+            "The two providers are looking at the same candle period, but their prices differ.\n"
+            f"Twelve Data is guiding the {direction} decision, but FXCM is the broker reference.\n"
+            "The two feeds may not agree on whether the level was truly broken or respected.\n"
+            "Because this setup is near an entry or invalidation level, please review the chart before continuing."
+        )
+        decision = "Choose YES to continue using Twelve Data, or NO to skip this setup."
+    else:
+        explanation = "These are the actual candles received from both providers for comparison."
+        decision = ""
+    severity = str(event.get("severity") or "WARNING").upper()
+    maximum_difference = event.get("maximum_difference_pips")
+    if maximum_difference is not None:
+        severity_line = (
+            f"Alert level: {severity} ({float(maximum_difference):.1f} pips maximum difference)\n"
+        )
+    else:
+        severity_line = ""
+    if severity == "LOW":
+        timing_line = "If unanswered, this review appears once more after 5 minutes, then the setup is approved automatically."
+    elif severity == "MEDIUM":
+        timing_line = "If unanswered, this review appears 3 more times every 5 minutes, then the setup is approved automatically."
+    elif severity == "HIGH":
+        timing_line = "If unanswered, this review appears 3 more times every 5 minutes, then this setup is declined."
+    else:
+        timing_line = ""
+    heading = "FXCM DATA REVIEW" if is_review else "FXCM OHLC MISMATCH"
     return (
-        f"<b>FXCM OHLC MISMATCH: {pair} {timeframe}</b>\n"
+        f"<b>{heading}: {pair} {timeframe}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"{_html(severity_line)}"
+        f"{_html(explanation)}\n"
+        f"{_html(decision)}\n"
+        f"{_html(timing_line)}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"<pre>{table}</pre>\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -405,9 +451,10 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
 
 
 def _decision_markup(kind: str, pair: str, setup_id: str) -> dict[str, Any]:
+    no_text = "NO - SKIP SETUP" if kind == "fxcm_conflict" else "NO - END SETUP"
     return {
         "inline_keyboard": [[
             {"text": "YES - CONTINUE", "callback_data": f"decision|yes|{kind}|{pair}|{setup_id}"},
-            {"text": "NO - END SETUP", "callback_data": f"decision|no|{kind}|{pair}|{setup_id}"},
+            {"text": no_text, "callback_data": f"decision|no|{kind}|{pair}|{setup_id}"},
         ]]
     }

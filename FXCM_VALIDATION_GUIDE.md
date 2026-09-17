@@ -80,9 +80,20 @@ This means:
 
 The two providers are looking at the same candle period, but one or more fields differ substantially.
 
-The scanner records a warning event in `snapshot.meta.events` and sends an FXCM OHLC warning to Telegram when Telegram is available.
+The scanner keeps this as a data-quality warning first. It sends a Telegram review prompt on the first meaningful same-period difference when the active setup is close to its daily or H4 level.
 
-A mismatch is a data-quality warning. It does not change the trading strategy or automatically cancel a setup.
+A one-off mismatch does not interrupt the strategy. A repeated mismatch near an active entry or invalidation level temporarily holds the final alert and asks for a manual decision:
+
+- `YES - CONTINUE`: release this setup while keeping Twelve Data as the strategy source.
+- `NO - SKIP SETUP`: end this setup.
+
+The review level is based on the largest OHLC difference:
+
+- `LOW`: 0.5 to less than 2 pips. The alert appears once more after 5 minutes. If unanswered, the setup continues automatically.
+- `MEDIUM`: 2 to less than 4 pips. The alert appears 3 more times at 5-minute intervals. If unanswered, the setup continues automatically.
+- `HIGH`: 4 pips or more. The alert appears 3 more times at 5-minute intervals. If unanswered, the setup is declined.
+
+These levels apply only when both providers are reporting the same candle period. Different-period candles remain `BOUNDARY_MISMATCH` and do not create an OHLC conflict alert.
 
 ### `BOUNDARY_MISMATCH`
 
@@ -337,6 +348,16 @@ Tolerance: 2.0 pips
 ```
 
 The values come from the actual candles used in the comparison. They are not copied from Twelve Data.
+
+For a repeated mismatch that is close to an active setup level, Telegram also explains the practical risk in plain language. For example:
+
+```text
+Twelve Data is guiding the BUY decision, but FXCM is the broker reference.
+The two feeds may not agree on whether the level was truly broken or respected.
+Because this setup is near an entry or invalidation level, please review the chart before continuing.
+
+Choose YES to continue using Twelve Data, or NO to skip this setup.
+```
 
 ### Invalidation and decision alerts
 

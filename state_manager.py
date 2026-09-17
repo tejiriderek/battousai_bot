@@ -66,6 +66,8 @@ EMPTY_PAIR = {
     "warning_type": None,
     "warning_acknowledged": False,
     "confirmation_prompt_count": 0,
+    "fxcm_conflict_override": False,
+    "fxcm_conflict_details": None,
     "retest_allowed": None,
     "second_chance_allowed": None,
 }
@@ -300,7 +302,7 @@ class StateManager:
         current = self.get(pair)
         if current.get("setup_id") != setup_id or current.get("state") == "WATCHING":
             return False
-        valid_types = {"gap", "news", "aging", "retest", "second_chance"}
+        valid_types = {"gap", "news", "aging", "retest", "second_chance", "fxcm_conflict"}
         if warning_type not in valid_types or decision not in {"yes", "no"}:
             return False
         if decision == "yes":
@@ -310,6 +312,7 @@ class StateManager:
                 "aging": "aging_override",
                 "retest": "retest_allowed",
                 "second_chance": "second_chance_allowed",
+                "fxcm_conflict": "fxcm_conflict_override",
             }[warning_type]
             self.update(pair, **{field: True, "warning_acknowledged": True})
             self.record_event(

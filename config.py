@@ -147,6 +147,12 @@ FXCM_OHLC_TOLERANCE_PIPS = float(
 FXCM_OHLC_MISMATCH_MULTIPLIER = float(
     os.getenv("FXCM_OHLC_MISMATCH_MULTIPLIER", "3.0")
 )
+FXCM_CONFLICT_NEAR_LEVEL_PIPS = float(
+    os.getenv("FXCM_CONFLICT_NEAR_LEVEL_PIPS", "10")
+)
+FXCM_LOW_ALERT_PIPS = float(os.getenv("FXCM_LOW_ALERT_PIPS", "0.5"))
+FXCM_MEDIUM_ALERT_PIPS = float(os.getenv("FXCM_MEDIUM_ALERT_PIPS", "2.0"))
+FXCM_HIGH_ALERT_PIPS = float(os.getenv("FXCM_HIGH_ALERT_PIPS", "4.0"))
 RETIRE_LEGACY_ALERT_SENT = os.getenv(
     "RETIRE_LEGACY_ALERT_SENT", "false"
 ).lower() in {"true", "1", "yes"}

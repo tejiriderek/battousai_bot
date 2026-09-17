@@ -104,7 +104,7 @@ class FXCMValidationStore:
             ohlc_comparison = _compare_timeframes(
                 pair, value.get("ohlc", {}), primary_market
             )
-            self._record_ohlc_events(pair, ohlc_comparison)
+            self._record_ohlc_events(pair, ohlc_comparison, primary_pair)
             result_pairs[pair] = {
                 **value,
                 "age_seconds": age,
@@ -126,11 +126,14 @@ class FXCMValidationStore:
         }
 
     def _record_ohlc_events(
-        self, pair: str, comparison: dict[str, Any]
+        self,
+        pair: str,
+        comparison: dict[str, Any],
+        primary_pair: dict[str, Any],
     ) -> None:
         for timeframe, result in comparison.items():
             key = (pair, timeframe)
-            if result.get("status") != "MISMATCH":
+            if result.get("period_status") != "SAME_PERIOD":
                 self._ohlc_event_signatures.pop(key, None)
                 continue
             signature = (
@@ -139,14 +142,23 @@ class FXCMValidationStore:
                 tuple(result.get("mismatch_fields", [])),
                 tuple(result.get("ohlc_difference_pips", {}).items()),
             )
+            differences = result.get("ohlc_difference_pips") or {}
+            maximum_difference = max((float(value) for value in differences.values()), default=0.0)
+            if maximum_difference < config.FXCM_LOW_ALERT_PIPS:
+                continue
             if self._ohlc_event_signatures.get(key) == signature:
+                continue
+            if not _near_active_setup_level(pair, result, primary_pair):
                 continue
             self._ohlc_event_signatures[key] = signature
             if self._event_recorder:
+                severity, response = _difference_severity(maximum_difference)
                 self._event_recorder(
                     {
-                        "type": "fxcm_ohlc_mismatch",
-                        "severity": "WARNING",
+                        "type": "fxcm_conflict",
+                        "warning_type": "fxcm_conflict",
+                        "severity": severity,
+                        "review_response": response,
                         "pair": pair,
                         "timeframe": timeframe,
                         "fields": result.get("mismatch_fields", []),
@@ -154,9 +166,46 @@ class FXCMValidationStore:
                         "ohlc_difference_pips": result.get("ohlc_difference_pips", {}),
                         "twelve_data": result.get("twelve_data"),
                         "fxcm": result.get("fxcm"),
+                        "maximum_difference_pips": maximum_difference,
+                        "requires_review": True,
+                        "direction": primary_pair.get("direction"),
+                        "state": primary_pair.get("state"),
+                        "setup_id": primary_pair.get("setup_id"),
+                        "daily_level_price": primary_pair.get("daily_level_price"),
+                        "h4_level_price": primary_pair.get("h4_level_price"),
                         "at": datetime.now(timezone.utc).isoformat(),
                     }
                 )
+
+
+def _difference_severity(maximum_difference_pips: float) -> tuple[str, str]:
+    if maximum_difference_pips >= config.FXCM_HIGH_ALERT_PIPS:
+        return "HIGH", "DECLINE"
+    if maximum_difference_pips >= config.FXCM_MEDIUM_ALERT_PIPS:
+        return "MEDIUM", "APPROVE"
+    return "LOW", "APPROVE"
+
+
+def _near_active_setup_level(
+    pair: str, result: dict[str, Any], state: dict[str, Any]
+) -> bool:
+    if state.get("state") == "WATCHING" or not state.get("setup_id"):
+        return False
+    levels = [state.get("h4_level_price"), state.get("daily_level_price")]
+    levels = [float(level) for level in levels if level is not None]
+    if not levels:
+        return False
+    values = [state.get("last_twelve_data_price")]
+    for candle_name in ("twelve_data", "fxcm"):
+        candle = result.get(candle_name) or {}
+        values.extend(candle.get(field) for field in ("open", "high", "low", "close"))
+    pip_size = config.pip_size(pair)
+    return any(
+        value is not None
+        and abs(float(value) - level) / pip_size <= config.FXCM_CONFLICT_NEAR_LEVEL_PIPS
+        for value in values
+        for level in levels
+    )
 
 
 def _normalize_timestamp(value: Any) -> str | None:

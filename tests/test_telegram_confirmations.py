@@ -118,7 +118,31 @@ class TelegramConfirmationTests(unittest.TestCase):
         self.assertIn("FXCM OHLC MISMATCH: EURUSD D1", text)
         self.assertIn("TwelveData", text)
         self.assertIn("FXCM", text)
-        self.assertIn("1.1495", text)
+
+    def test_fxcm_conflict_explains_risk_and_requests_confirmation(self):
+        service = TelegramService()
+        event = {
+            "type": "fxcm_conflict",
+            "pair": "NZDCAD",
+            "timeframe": "H4",
+            "direction": "BULLISH",
+            "setup_id": "setup-1",
+            "repeated_observations": 3,
+            "fields": ["close"],
+            "tolerance_pips": 2.0,
+            "ohlc_difference_pips": {"close": 6.8},
+            "twelve_data": {"open": 0.80129, "high": 0.80216, "low": 0.80128, "close": 0.8021},
+            "fxcm": {"open": 0.80104, "high": 0.80176, "low": 0.80091, "close": 0.80142},
+        }
+        with patch.object(service, "send_html", return_value=True) as send_html:
+            self.assertTrue(service.send_event(event))
+        text = send_html.call_args.args[0]
+        markup = send_html.call_args.args[1]
+        self.assertIn("same candle period, but their prices differ", text)
+        self.assertIn("Twelve Data is guiding the BUY decision", text)
+        self.assertIn("review the chart before continuing", text)
+        self.assertIn("YES to continue using Twelve Data", text)
+        self.assertIn("NO - SKIP SETUP", markup["inline_keyboard"][0][1]["text"])
 
 
 if __name__ == "__main__":

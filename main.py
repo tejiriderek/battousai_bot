@@ -35,9 +35,28 @@ _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
 _twelve_market_lock = threading.Lock()
 _twelve_market_data: dict[str, dict] = {}
-_fxcm_validation = FXCMValidationStore(
-    lambda: _primary_snapshot(), _states.record_event
-)
+
+
+def _record_fxcm_event(event: dict) -> None:
+    _states.record_event(event)
+    if not event.get("requires_review"):
+        return
+    pair = str(event.get("pair"))
+    current = _states.get(pair)
+    if (
+        current.get("setup_id") == event.get("setup_id")
+        and current.get("state") != "WATCHING"
+        and not current.get("warning_acknowledged")
+    ):
+        _states.update(
+            pair,
+            warning_type="fxcm_conflict",
+            warning_acknowledged=False,
+            fxcm_conflict_details=event,
+        )
+
+
+_fxcm_validation = FXCMValidationStore(lambda: _primary_snapshot(), _record_fxcm_event)
 _crypto_validation = CryptoValidationService(
     lambda: _primary_snapshot(),
     lambda source, connected, error: _handle_crypto_provider_status(
@@ -97,7 +116,28 @@ def _check_warning_timeouts() -> None:
                 continue
 
             prompt_count = int(current.get("confirmation_prompt_count", 0))
-            if prompt_count >= config.CONFIRMATION_MAX_PROMPTS:
+            if warning_type == "fxcm_conflict":
+                details = current.get("fxcm_conflict_details") or {}
+                severity = str(details.get("severity", "HIGH")).upper()
+                max_prompts = 2 if severity == "LOW" else 4
+            else:
+                max_prompts = config.CONFIRMATION_MAX_PROMPTS
+            if prompt_count >= max_prompts:
+                if warning_type == "fxcm_conflict":
+                    decision = "no" if severity == "HIGH" else "yes"
+                    applied = _states.apply_warning_decision(
+                        pair, setup_id, warning_type, decision
+                    )
+                    if applied:
+                        _send_pending_events()
+                        log.info(
+                            "Auto-%s FXCM %s review for %s after %d prompts",
+                            "declined" if decision == "no" else "approved",
+                            severity,
+                            pair,
+                            prompt_count,
+                        )
+                    continue
                 applied = _states.apply_warning_decision(
                     pair, setup_id, warning_type, "yes"
                 )
@@ -129,6 +169,15 @@ def _confirmation_event(
             "setup_id": setup_id,
             "warning_type": warning_type,
             "state": state.get("state"),
+        }
+    if warning_type == "fxcm_conflict":
+        details = state.get("fxcm_conflict_details") or {}
+        return {
+            "type": "fxcm_conflict",
+            "warning_type": warning_type,
+            "pair": pair,
+            "setup_id": setup_id,
+            **details,
         }
     if warning_type == "gap":
         return {
@@ -175,6 +224,7 @@ def _scan_once() -> None:
                     last_twelve_data_price=float(h4.iloc[-1]["close"]),
                     last_twelve_data_at=datetime.now(timezone.utc).isoformat(),
                 )
+            _fxcm_validation.snapshot()
             result = _strategy.evaluate(pair, daily, h4)
             if result and result.alert:
                 sent = _telegram.send_alert(result)

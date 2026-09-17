@@ -9,7 +9,13 @@ class FXCMValidationTests(unittest.TestCase):
     def setUp(self):
         self.primary = {
             "pairs": {
-                "EURUSD": {"last_twelve_data_price": 1.1000},
+                "EURUSD": {
+                    "last_twelve_data_price": 1.1000,
+                    "state": "WAITING_FOR_RETEST",
+                    "setup_id": "setup-1",
+                    "daily_level_price": 1.091,
+                    "h4_level_price": 1.091,
+                },
             },
             "market_data": {
                 "EURUSD": {
@@ -168,11 +174,41 @@ class FXCMValidationTests(unittest.TestCase):
 
         self.assertEqual(first["pairs"]["EURUSD"]["ohlc_comparison"]["D1"]["status"], "MISMATCH")
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["type"], "fxcm_ohlc_mismatch")
+        self.assertEqual(events[0]["type"], "fxcm_conflict")
         self.assertEqual(second["pairs"]["EURUSD"]["ohlc_comparison"]["D1"]["status"], "MISMATCH")
 
         self.assertEqual(events[0]["twelve_data"]["open"], 1.09)
         self.assertEqual(events[0]["fxcm"]["open"], 1.091)
+
+    def test_same_period_difference_alerts_on_first_observation(self):
+        events = []
+        store = FXCMValidationStore(lambda: self.primary, events.append)
+        payload = {
+            "pairs": {
+                "EURUSD": {
+                    "price": 1.1001,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "ohlc": {
+                        "D1": {
+                            "timestamp": "2026-09-16T00:00:00+00:00",
+                            "open": 1.091,
+                            "high": 1.11,
+                            "low": 1.08,
+                            "close": 1.10,
+                        }
+                    },
+                }
+            }
+        }
+        with patch("config.FXCM_BRIDGE_SHARED_SECRET", "secret"), patch(
+            "config.FXCM_BRIDGE_ENABLED", True
+        ):
+            store.accept(payload, "secret")
+            store.snapshot()
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "fxcm_conflict")
+        self.assertEqual(events[0]["severity"], "HIGH")
 
 
 if __name__ == "__main__":

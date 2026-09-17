@@ -639,6 +639,13 @@ class StrategyEngine:
 
     def _emit_alert(self, pair: str) -> ScanResult | None:
         state = self.states.get(pair)
+        if (
+            state.get("warning_type") == "fxcm_conflict"
+            and not state.get("warning_acknowledged")
+            and not state.get("fxcm_conflict_override")
+        ):
+            log.warning("%s final alert held for FXCM manual review", pair)
+            return None
         alert_key = "|".join(
             [
                 pair,
