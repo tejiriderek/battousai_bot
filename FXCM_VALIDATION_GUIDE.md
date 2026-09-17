@@ -147,6 +147,142 @@ This is expected unless both sources provide candles built from the same daily b
 
 Do not interpret this as proof that FXCM prices are wrong. It means the daily candles cover different trading sessions.
 
+## Crypto pairs: BTCUSDT and ETHUSDT
+
+Crypto pairs are still part of the project. The supported crypto pairs are:
+
+```text
+BTCUSDT
+ETHUSDT
+```
+
+Crypto uses three data sources:
+
+| Provider | Role | Symbol used by the provider |
+| --- | --- | --- |
+| Twelve Data | Primary strategy source | BTC/USD or ETH/USD |
+| Binance | Independent live-price and candle reference | BTCUSDT or ETHUSDT |
+| Coinbase | Independent live-price and candle reference | BTC-USD or ETH-USD |
+
+The crypto provider feeds do not replace Twelve Data and do not create setups. The strategy continues to calculate the daily setup, H4 breakout, retest, continuation, and final signal from Twelve Data.
+
+### What Binance and Coinbase validate
+
+For each crypto pair, Binance and Coinbase provide:
+
+- live price;
+- live-feed timestamp;
+- completed D1 candle;
+- completed H4 candle;
+- price difference from Twelve Data;
+- OHLC comparison with Twelve Data.
+
+The candle comparison checks the same four fields:
+
+```text
+Open
+High
+Low
+Close
+```
+
+Crypto candles use UTC boundaries. A healthy same-period result looks like:
+
+```json
+"H4": {
+  "status": "COMPARED",
+  "timestamp_difference_seconds": 0,
+  "ohlc_difference": {
+    "open": 0.0,
+    "high": 0.0,
+    "low": 0.0,
+    "close": 0.0
+  }
+}
+```
+
+The crypto comparison is diagnostic. A Binance or Coinbase difference does not change the Twelve Data strategy state and does not automatically cancel a crypto setup.
+
+### Crypto live-price statuses
+
+In `/status`, each crypto provider can show:
+
+```text
+OK
+PRICE_DISCREPANCY_WARNING
+STALE
+DISCONNECTED
+NO_PRIMARY
+DISABLED
+```
+
+Meaning:
+
+- `OK`: the provider is connected and its live price is within the configured percentage threshold of Twelve Data.
+- `PRICE_DISCREPANCY_WARNING`: the provider is connected, but its live price differs from Twelve Data beyond the configured percentage threshold.
+- `STALE`: the provider has not delivered a recent live message.
+- `DISCONNECTED`: no active live connection is available.
+- `NO_PRIMARY`: the provider has data, but the scanner does not currently have the corresponding Twelve Data price.
+- `DISABLED`: that provider was not enabled in the environment.
+
+### Crypto candle statuses
+
+Crypto candle comparisons are separate from live-price status. A provider may have cached candles while its live ticker is stale or disconnected.
+
+For example:
+
+```text
+Coinbase live status: STALE
+Coinbase D1 candle: available
+Coinbase H4 candle: available
+```
+
+This means the stored Coinbase candles can still be displayed for reference, but the current Coinbase live price should not be treated as fresh.
+
+### Crypto Telegram display
+
+When a final BTCUSDT or ETHUSDT setup alert is sent, the provider section includes all three crypto sources when validation data is available:
+
+```text
+DATA SOURCE COMPARISON
+
+Binance: CONNECTED
+  Price: ...
+  D1: O=... H=... L=... C=...
+  H4: O=... H=... L=... C=...
+
+Coinbase: CONNECTED
+  Price: ...
+  D1: O=... H=... L=... C=...
+  H4: O=... H=... L=... C=...
+
+Twelve Data (Primary): ACTIVE
+  D1: O=... H=... L=... C=...
+  H4: O=... H=... L=... C=...
+```
+
+The final alert shows the providers as separate blocks, not as a fixed-width side-by-side table. A provider that is unavailable is shown as `DISCONNECTED`, `STALE`, or `DISABLED` rather than being silently omitted.
+
+Crypto validation data is not currently used to block the final strategy alert. Treat it as a cross-check of market data quality.
+
+### How a trader should interpret crypto data
+
+For a crypto setup:
+
+1. Read the Twelve Data strategy state first. It determines whether the setup exists.
+2. Check whether Binance and Coinbase are connected and fresh.
+3. Compare the live prices across providers.
+4. Check D1 and H4 candle timestamps before judging OHLC differences.
+5. If one provider is stale or disconnected, treat that provider as unavailable evidence rather than as confirmation of direction.
+6. If providers disagree materially while the periods match, pause and verify the chart or exchange feed before relying heavily on the comparison.
+
+The safest interpretation is:
+
+```text
+Twelve Data = strategy decision
+Binance/Coinbase = independent market-data checks
+```
+
 ## What to expect on Telegram
 
 ### Stage alerts
