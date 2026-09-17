@@ -282,21 +282,85 @@ def format_alert(result: ScanResult, validation: dict[str, Any] | None = None) -
         "━━━━━━━━━━━━━━━━━━\n"
         f"<i>State: {result.state}</i>"
     )
-    if validation and result.pair.endswith("USDT"):
-        text += "\n━━━━━━━━━━━━━━━━━━\n<b>PROVIDER VALIDATION</b>\n"
-        text += _format_validation_provider("binance", validation.get("binance"))
-        text += _format_validation_provider("coinbase", validation.get("coinbase"))
+    if validation:
+        text += "\n━━━━━━━━━━━━━━━━━━\n<b>DATA SOURCE COMPARISON</b>\n"
+        if result.pair.endswith("USDT"):
+            text += _format_validation_provider("binance", validation.get("binance"), result.pair)
+            text += _format_validation_provider("coinbase", validation.get("coinbase"), result.pair)
+            text += _format_twelve_data_primary(validation, result.pair)
+        else:
+            text += _format_fxcm_validation(validation.get("fxcm_validation"), result.pair)
+            text += _format_twelve_data_primary(validation, result.pair)
     return text
 
 
-def _format_validation_provider(source: str, details: dict[str, Any] | None) -> str:
+def _format_validation_provider(source: str, details: dict[str, Any] | None, pair: str) -> str:
     if not details or not details.get("enabled"):
-        return f"{source.title()}: 🔴 UNAVAILABLE\n"
+        return f"<b>{source.title()}:</b> 🔴 DISABLED\n"
     if not details.get("connected") or details.get("stale"):
-        return f"{source.title()}: 🔴 UNAVAILABLE\n"
-    lines = [f"{source.title()}: CONNECTED"]
-    for product, symbol in details.get("symbols", {}).items():
-        lines.append(f"{symbol}: {details.get('symbols', {}).get(product, {}).get('price', 'N/A')}")
+        status = "DISCONNECTED" if not details.get("connected") else "STALE"
+        return f"<b>{source.title()}:</b> 🔴 {status}\n"
+    
+    # Map pair to symbol
+    symbol_map = {"BTCUSDT": "BTC-USD" if source == "coinbase" else "BTCUSDT", 
+                  "ETHUSDT": "ETH-USD" if source == "coinbase" else "ETHUSDT"}
+    symbol = symbol_map.get(pair, pair)
+    
+    symbol_data = details.get("symbols", {}).get(symbol, {})
+    price = symbol_data.get("price")
+    ohlc = symbol_data.get("ohlc", {})
+    
+    lines = [f"<b>{source.title()}:</b> 🟢 CONNECTED"]
+    if price:
+        lines.append(f"  Price: <code>{price}</code>")
+    
+    # Add OHLC data if available
+    d1 = ohlc.get("D1")
+    h4 = ohlc.get("H4")
+    if d1:
+        lines.append(f"  D1: O={d1.get('open')} H={d1.get('high')} L={d1.get('low')} C={d1.get('close')}")
+    if h4:
+        lines.append(f"  H4: O={h4.get('open')} H={h4.get('high')} L={h4.get('low')} C={h4.get('close')}")
+    
+    return "\n".join(lines) + "\n"
+
+
+def _format_fxcm_validation(details: dict[str, Any] | None, pair: str) -> str:
+    if not details or not details.get("enabled"):
+        return "<b>FXCM:</b> 🔴 DISABLED\n"
+    if not details.get("connected") or details.get("stale"):
+        status = "DISCONNECTED" if not details.get("connected") else "STALE"
+        return f"<b>FXCM:</b> 🔴 {status}\n"
+    
+    pair_data = details.get("pairs", {}).get(pair, {})
+    price = pair_data.get("price")
+    ohlc = pair_data.get("ohlc", {})
+    
+    lines = ["<b>FXCM:</b> 🟢 CONNECTED"]
+    if price:
+        lines.append(f"  Price: <code>{price}</code>")
+    
+    d1 = ohlc.get("D1")
+    h4 = ohlc.get("H4")
+    if d1:
+        lines.append(f"  D1: O={d1.get('open')} H={d1.get('high')} L={d1.get('low')} C={d1.get('close')}")
+    if h4:
+        lines.append(f"  H4: O={h4.get('open')} H={h4.get('high')} L={h4.get('low')} C={h4.get('close')}")
+    
+    return "\n".join(lines) + "\n"
+
+
+def _format_twelve_data_primary(validation: dict[str, Any] | None, pair: str) -> str:
+    market_data = validation.get("market_data", {}).get(pair, {})
+    d1 = market_data.get("D1")
+    h4 = market_data.get("H4")
+    
+    lines = ["<b>Twelve Data (Primary):</b> 🟢 ACTIVE"]
+    if d1:
+        lines.append(f"  D1: O={d1.get('open')} H={d1.get('high')} L={d1.get('low')} C={d1.get('close')}")
+    if h4:
+        lines.append(f"  H4: O={h4.get('open')} H={h4.get('high')} L={h4.get('low')} C={h4.get('close')}")
+    
     return "\n".join(lines) + "\n"
 
 

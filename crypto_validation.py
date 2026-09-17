@@ -189,8 +189,14 @@ class CryptoValidationService:
             definition["url"], ping_interval=20, ping_timeout=20, max_queue=1000
         ) as socket:
             products = list(definition["symbols"].values())
-            await socket.send(json.dumps({"type": "subscribe", "product_ids": products, "channel": "ticker"}))
-            await socket.send(json.dumps({"type": "subscribe", "channel": "heartbeats", "product_ids": products}))
+            # Subscribe to ticker channel with correct format for Advanced Trade API
+            subscribe_msg = {
+                "type": "subscribe",
+                "channel": "ticker",
+                "product_ids": products
+            }
+            await socket.send(json.dumps(subscribe_msg))
+            log.info("[Coinbase] subscribed to ticker channel for: %s", products)
             while not self._stop_event.is_set():
                 try:
                     raw = await asyncio.wait_for(socket.recv(), timeout=1)
@@ -213,15 +219,25 @@ class CryptoValidationService:
     def _handle_coinbase_message(self, raw: str | bytes) -> None:
         try:
             payload = json.loads(raw)
-            for event in payload.get("events", []):
-                for ticker in event.get("tickers", []):
+            # Handle new Advanced Trade API format
+            if payload.get("channel") == "ticker":
+                for ticker in payload.get("tickers", []):
                     product = str(ticker.get("product_id", ""))
-                    price = float(ticker["price"])
+                    price = float(ticker.get("price", 0))
                     event_time = _parse_timestamp(ticker.get("time"))
-                    if product in _SOURCE_DEFINITIONS["coinbase"]["symbols"].values() and event_time:
-                        self._record("coinbase", product, price, event_time)
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
-            log.warning("[Coinbase] ignored malformed market-data message")
+                    if product in _SOURCE_DEFINITIONS["coinbase"]["symbols"].values() and price > 0:
+                        self._record("coinbase", product, price, event_time or datetime.now(timezone.utc))
+            # Handle legacy format (if any)
+            elif "events" in payload:
+                for event in payload.get("events", []):
+                    for ticker in event.get("tickers", []):
+                        product = str(ticker.get("product_id", ""))
+                        price = float(ticker.get("price", 0))
+                        event_time = _parse_timestamp(ticker.get("time"))
+                        if product in _SOURCE_DEFINITIONS["coinbase"]["symbols"].values() and price > 0:
+                            self._record("coinbase", product, price, event_time or datetime.now(timezone.utc))
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            log.warning("[Coinbase] ignored malformed market-data message: %s", exc)
 
     def _record(self, source: str, product: str, price: float, timestamp: datetime) -> None:
         self._set_connected(source, True)
