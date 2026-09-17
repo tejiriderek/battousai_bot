@@ -218,7 +218,11 @@ class StateManager:
         )
         self.record_event(
             {
-                "type": "setup_invalidated",
+                "type": (
+                    "setup_completed"
+                    if reason == "setup_completed"
+                    else "setup_invalidated"
+                ),
                 "pair": pair,
                 "previous_state": previous_state,
                 "reason": reason,

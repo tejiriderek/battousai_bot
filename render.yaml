@@ -60,6 +60,10 @@ services:
         value: "90"
       - key: FXCM_MAX_PRICE_DISCREPANCY_PCT
         value: "0.1"
+      - key: FXCM_OHLC_TOLERANCE_PIPS
+        value: "2.0"
+      - key: FXCM_OHLC_MISMATCH_MULTIPLIER
+        value: "3.0"
       - key: FXCM_BRIDGE_SHARED_SECRET
         sync: false
   - type: worker

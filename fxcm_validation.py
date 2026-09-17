@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import config
 
@@ -24,12 +24,18 @@ FXCM_SYMBOLS = {
 
 
 class FXCMValidationStore:
-    def __init__(self, primary_snapshot_provider):
+    def __init__(
+        self,
+        primary_snapshot_provider,
+        event_recorder: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self._primary_snapshot_provider = primary_snapshot_provider
+        self._event_recorder = event_recorder
         self._lock = threading.Lock()
         self._last_received_at: str | None = None
         self._last_error: str | None = None
         self._pairs: dict[str, dict[str, Any]] = {}
+        self._ohlc_event_signatures: dict[tuple[str, str], tuple[Any, ...]] = {}
 
     def enabled(self) -> bool:
         return config.FXCM_BRIDGE_ENABLED
@@ -95,12 +101,16 @@ class FXCMValidationStore:
             price_difference_pct = _percent_difference(
                 value.get("price"), primary_pair.get("last_twelve_data_price")
             )
+            ohlc_comparison = _compare_timeframes(
+                pair, value.get("ohlc", {}), primary_market
+            )
+            self._record_ohlc_events(pair, ohlc_comparison)
             result_pairs[pair] = {
                 **value,
                 "age_seconds": age,
                 "stale": age is None or age > config.FXCM_STALE_SECONDS,
                 "price_difference_pct": price_difference_pct,
-                "ohlc_comparison": _compare_timeframes(value.get("ohlc", {}), primary_market),
+                "ohlc_comparison": ohlc_comparison,
                 "validation_status": _validation_status(
                     age, price_difference_pct, config.FXCM_MAX_PRICE_DISCREPANCY_PCT
                 ),
@@ -114,6 +124,37 @@ class FXCMValidationStore:
             "stale": age is None or age > config.FXCM_STALE_SECONDS,
             "pairs": result_pairs,
         }
+
+    def _record_ohlc_events(
+        self, pair: str, comparison: dict[str, Any]
+    ) -> None:
+        for timeframe, result in comparison.items():
+            key = (pair, timeframe)
+            if result.get("status") != "MISMATCH":
+                self._ohlc_event_signatures.pop(key, None)
+                continue
+            signature = (
+                result.get("left_timestamp"),
+                result.get("right_timestamp"),
+                tuple(result.get("mismatch_fields", [])),
+                tuple(result.get("ohlc_difference_pips", {}).items()),
+            )
+            if self._ohlc_event_signatures.get(key) == signature:
+                continue
+            self._ohlc_event_signatures[key] = signature
+            if self._event_recorder:
+                self._event_recorder(
+                    {
+                        "type": "fxcm_ohlc_mismatch",
+                        "severity": "WARNING",
+                        "pair": pair,
+                        "timeframe": timeframe,
+                        "fields": result.get("mismatch_fields", []),
+                        "tolerance_pips": result.get("tolerance_pips"),
+                        "ohlc_difference_pips": result.get("ohlc_difference_pips", {}),
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
 
 def _normalize_timestamp(value: Any) -> str | None:
@@ -144,7 +185,9 @@ def _normalize_ohlc(value: Any) -> dict[str, dict[str, Any] | None]:
     return result
 
 
-def _compare_timeframes(fxcm: dict[str, Any], primary: dict[str, Any]) -> dict[str, Any]:
+def _compare_timeframes(
+    pair: str, fxcm: dict[str, Any], primary: dict[str, Any]
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for timeframe in ("D1", "H4"):
         left = fxcm.get(timeframe)
@@ -152,17 +195,93 @@ def _compare_timeframes(fxcm: dict[str, Any], primary: dict[str, Any]) -> dict[s
         if not left or not right:
             result[timeframe] = {"status": "UNAVAILABLE"}
             continue
-        result[timeframe] = {
-            "status": "COMPARED",
-            "timestamp_difference_seconds": int(
-                (datetime.fromisoformat(left["timestamp"]) - datetime.fromisoformat(right["timestamp"])).total_seconds()
-            ),
-            "ohlc_difference": {
-                field: float(left[field]) - float(right[field])
-                for field in ("open", "high", "low", "close")
-            },
+        differences = {
+            field: float(left[field]) - float(right[field])
+            for field in ("open", "high", "low", "close")
         }
+        tolerance_pips = config.FXCM_OHLC_TOLERANCE_PIPS
+        difference_pips = {
+            field: abs(difference) / config.pip_size(pair)
+            for field, difference in differences.items()
+        }
+        disagreements = [
+            field for field, difference in difference_pips.items()
+            if difference > tolerance_pips
+        ]
+        mismatch_fields = [
+            field for field, difference in difference_pips.items()
+            if difference > tolerance_pips * config.FXCM_OHLC_MISMATCH_MULTIPLIER
+        ]
+        if mismatch_fields:
+            status = "MISMATCH"
+        elif disagreements:
+            status = "WARN"
+        else:
+            status = "OK"
+        raw_timestamp_difference = _timestamp_difference_seconds(
+            left.get("timestamp"), right.get("timestamp")
+        )
+        normalized_timestamp_difference = _normalized_timestamp_difference_seconds(
+            left.get("timestamp"), right.get("timestamp"), timeframe
+        )
+        result[timeframe] = {
+            "status": status,
+            "tolerance_pips": tolerance_pips,
+            "mismatch_multiplier": config.FXCM_OHLC_MISMATCH_MULTIPLIER,
+            "timestamp_difference_seconds": raw_timestamp_difference,
+            "normalized_timestamp_difference_seconds": normalized_timestamp_difference,
+            "left_timestamp": left.get("timestamp"),
+            "right_timestamp": right.get("timestamp"),
+            "ohlc_difference": differences,
+            "ohlc_difference_pips": difference_pips,
+            "disagreement_fields": disagreements,
+            "mismatch_fields": mismatch_fields,
+        }
+        if status in {"WARN", "MISMATCH"}:
+            log.warning(
+                "FXCM OHLC %s for %s %s; fields=%s tolerance_pips=%s differences_pips=%s",
+                status,
+                pair,
+                timeframe,
+                disagreements,
+                tolerance_pips,
+                difference_pips,
+            )
     return result
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _timestamp_difference_seconds(left: Any, right: Any) -> int | None:
+    left_timestamp = _parse_utc_timestamp(left)
+    right_timestamp = _parse_utc_timestamp(right)
+    if not left_timestamp or not right_timestamp:
+        return None
+    return int((left_timestamp - right_timestamp).total_seconds())
+
+
+def _normalized_timestamp_difference_seconds(
+    left: Any, right: Any, timeframe: str
+) -> int | None:
+    left_timestamp = _parse_utc_timestamp(left)
+    right_timestamp = _parse_utc_timestamp(right)
+    if not left_timestamp or not right_timestamp:
+        return None
+    if timeframe == "D1":
+        # FXCM stamps the same forex trading day at 21:00 UTC while Twelve Data
+        # labels it at 00:00 UTC. Compare the shared calendar-day label only.
+        left_timestamp = left_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+        right_timestamp = right_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int((left_timestamp - right_timestamp).total_seconds())
 
 
 def _validation_status(age: float | None, difference: float | None, threshold: float) -> str:

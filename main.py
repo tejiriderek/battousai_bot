@@ -35,7 +35,9 @@ _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
 _twelve_market_lock = threading.Lock()
 _twelve_market_data: dict[str, dict] = {}
-_fxcm_validation = FXCMValidationStore(lambda: _primary_snapshot())
+_fxcm_validation = FXCMValidationStore(
+    lambda: _primary_snapshot(), _states.record_event
+)
 _crypto_validation = CryptoValidationService(
     lambda: _primary_snapshot(),
     lambda source, connected, error: _handle_crypto_provider_status(
@@ -182,6 +184,18 @@ def _scan_once() -> None:
                     result.direction,
                     sent,
                 )
+                if sent:
+                    completed = _states.get(pair)
+                    _states.reset(
+                        pair,
+                        reason="setup_completed",
+                        details={
+                            "alert_key": completed.get("last_alert_key"),
+                            "alert_at": completed.get("last_alert_at"),
+                        },
+                        last_alert_key=completed.get("last_alert_key"),
+                        last_alert_at=completed.get("last_alert_at"),
+                    )
             _send_pending_events()
         except DataServiceError as exc:
             log.warning("%s data error: %s", pair, exc)
@@ -238,9 +252,26 @@ def _primary_snapshot() -> dict:
 def _handle_crypto_provider_status(source: str, connected: bool, error: str | None) -> None:
     state = "RECOVERED" if connected else "UNAVAILABLE"
     detail = "public market-data connection restored" if connected else (error or "connection lost")
+    
+    # Get current prices from validation snapshot
+    validation = _crypto_validation.snapshot()
+    source_data = validation.get(source, {})
+    symbols = source_data.get("symbols", {})
+    
+    # Add price data if available
+    price_info = ""
+    if connected and symbols:
+        prices = []
+        for symbol, data in symbols.items():
+            price = data.get("price")
+            if price:
+                prices.append(f"{symbol}: <code>{price}</code>")
+        if prices:
+            price_info = "\n" + "\n".join(prices)
+    
     _telegram.send_html(
         f"<b>{source.upper()} VALIDATION {state}</b>\n"
-        f"{detail}. Twelve Data strategy remains authoritative and unchanged."
+        f"{detail}. Twelve Data strategy remains authoritative and unchanged.{price_info}"
     )
 
 
@@ -425,9 +456,10 @@ def _sleep(seconds: float) -> None:
 
 
 def _status_snapshot() -> dict:
+    fxcm_snapshot = _fxcm_validation.snapshot()
     snapshot = _primary_snapshot()
     snapshot["crypto_validation"] = _crypto_validation.snapshot()
-    snapshot["fxcm_validation"] = _fxcm_validation.snapshot()
+    snapshot["fxcm_validation"] = fxcm_snapshot
     return snapshot
 
 

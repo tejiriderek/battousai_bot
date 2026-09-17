@@ -489,6 +489,7 @@ class StrategyEngine:
                 str(level_price),
                 "SECOND_CHANCE_PULLBACK",
                 str(breakout_time),
+                str(state.get("setup_id")),
             ]
         )
         if alert_key == state.get("last_alert_key"):
@@ -641,6 +642,7 @@ class StrategyEngine:
                 str(state.get("h4_level_price")),
                 str(state.get("h4_breakout_bar_time")),
                 str(state.get("retest_bar_time")),
+                str(state.get("setup_id")),
             ]
         )
         if alert_key == state.get("last_alert_key"):
