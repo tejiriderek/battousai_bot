@@ -250,6 +250,8 @@ def _primary_snapshot() -> dict:
 
 
 def _handle_crypto_provider_status(source: str, connected: bool, error: str | None) -> None:
+    if source == "binance":
+        return
     state = "RECOVERED" if connected else "UNAVAILABLE"
     detail = "public market-data connection restored" if connected else (error or "connection lost")
     
