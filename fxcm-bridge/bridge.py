@@ -1,4 +1,4 @@
-"""Read-only FXCM ForexConnect bridge for the main scanner."""
+"""Read-only FXCM ForexConnect API bridge for the main scanner."""
 
 from __future__ import annotations
 
@@ -44,80 +44,113 @@ def bridge_worker():
 def main() -> None:
     if os.getenv("FXCM_ENABLED", "false").lower() not in {"true", "1", "yes"}:
         raise RuntimeError("FXCM_ENABLED is not true")
+    
     username = os.getenv("FXCM_USERNAME", "")
     password = os.getenv("FXCM_PASSWORD", "")
     receiver = os.getenv("SCANNER_RECEIVER_URL", "").rstrip("/")
     secret = os.getenv("FXCM_BRIDGE_SHARED_SECRET", "")
+    
     if not username or not password or not receiver or not secret:
         raise RuntimeError("FXCM_USERNAME, FXCM_PASSWORD, SCANNER_RECEIVER_URL, and FXCM_BRIDGE_SHARED_SECRET are required")
 
-    from forexconnect import ForexConnect
+    from forexconnect import ForexConnect, SessionStatusListener, ResponseListener
 
     while True:
         try:
-            with ForexConnect() as fx:
-                fx.login(
-                    username,
-                    password,
-                    os.getenv("FXCM_SERVER") or "https://www.fxcorporate.com/Hosts.jsp",
-                    os.getenv("FXCM_CONNECTION", "demo"),
-                    "",
-                    "",
-                    None,
+            session = ForexConnect()
+            log.info("Connecting to FXCM ForexConnect API...")
+            session.login(
+                username,
+                password,
+                "https://www.fxcorporate.com/Hosts.jsp",
+                os.getenv("FXCM_CONNECTION", "demo")
+            )
+            log.info("FXCM connected via ForexConnect API")
+            
+            while True:
+                payload = collect_snapshot(session)
+                response = requests.post(
+                    receiver,
+                    json=payload,
+                    headers={"X-FXCM-Bridge-Secret": secret},
+                    timeout=10,
                 )
-                log.info("FXCM authenticated")
-                while True:
-                    payload = collect_snapshot(fx)
-                    response = requests.post(
-                        receiver,
-                        json=payload,
-                        headers={"X-FXCM-Bridge-Secret": secret},
-                        timeout=10,
-                    )
-                    response.raise_for_status()
-                    time.sleep(max(5, int(os.getenv("FXCM_POLL_SECONDS", "30"))))
+                response.raise_for_status()
+                time.sleep(max(5, int(os.getenv("FXCM_POLL_SECONDS", "30"))))
         except Exception as exc:
             log.warning("FXCM bridge disconnected: %s; retrying", type(exc).__name__)
             time.sleep(10)
 
 
-def collect_snapshot(fx) -> dict:
-    offers = {row.instrument: row for row in fx.get_table(ForexConnect.OFFERS)}
+def collect_snapshot(session) -> dict:
     pairs = {}
-    for pair, instrument in PAIRS.items():
-        row = offers.get(instrument)
-        if row is None:
-            continue
-        bid = float(row.bid)
-        ask = float(row.ask)
-        pairs[pair] = {
-            "price": (bid + ask) / 2,
-            "bid": bid,
-            "ask": ask,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "ohlc": {
-                "D1": history_candle(fx, instrument, "D1"),
-                "H4": history_candle(fx, instrument, "H4"),
-            },
-        }
+    try:
+        # Get the Offers table using TableManager
+        table_manager = session.table_manager
+        offers_table = table_manager.get_table("Offers")
+        
+        # Convert to pandas DataFrame for easier manipulation
+        from forexconnect.common import Common
+        df = Common.convert_table_to_dataframe(offers_table)
+        
+        for pair, instrument in PAIRS.items():
+            try:
+                # Find the row for this instrument
+                instrument_rows = df[df['instrument'] == instrument]
+                if instrument_rows.empty:
+                    log.warning("No data found for %s", instrument)
+                    continue
+                
+                row = instrument_rows.iloc[-1]
+                bid = float(row['bid'])
+                ask = float(row['ask'])
+                
+                pairs[pair] = {
+                    "price": (bid + ask) / 2,
+                    "bid": bid,
+                    "ask": ask,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "ohlc": {
+                        "D1": get_history_candle(session, instrument, 'D1'),
+                        "H4": get_history_candle(session, instrument, 'H4'),
+                    },
+                }
+            except Exception as e:
+                log.warning("Failed to get data for %s: %s", pair, e)
+                continue
+    except Exception as e:
+        log.error("Failed to get offers table: %s", e)
+    
     return {"source": "fxcm", "account_type": "demo", "sent_at": datetime.now(timezone.utc).isoformat(), "pairs": pairs}
 
 
-def history_candle(fx, instrument: str, timeframe: str) -> dict | None:
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(days=5 if timeframe == "D1" else 2)
-    rows = fx.get_history(instrument, timeframe, start, now, 10)
-    if not rows:
+def get_history_candle(session, instrument: str, timeframe: str) -> dict | None:
+    try:
+        # Get historical data using LiveHistory
+        from forexconnect import LiveHistory, LiveHistoryCreator
+        history = LiveHistoryCreator.create(session)
+        
+        # Map timeframe to ForexConnect period
+        period_map = {'D1': 'D1', 'H4': 'H4'}
+        period = period_map.get(timeframe, 'D1')
+        
+        # Get historical candles
+        candles = history.get_history(instrument, period, 1)
+        if candles is None or len(candles) == 0:
+            return None
+        
+        candle = candles[-1]
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "open": float(candle['open']),
+            "high": float(candle['high']),
+            "low": float(candle['low']),
+            "close": float(candle['close']),
+            "completed": True,
+        }
+    except Exception as e:
+        log.warning("Failed to get history for %s %s: %s", instrument, timeframe, e)
         return None
-    row = rows[-1]
-    return {
-        "timestamp": datetime.fromisoformat(str(row["Date"])).astimezone(timezone.utc).isoformat(),
-        "open": float(row["BidOpen"]),
-        "high": float(row["BidHigh"]),
-        "low": float(row["BidLow"]),
-        "close": float(row["BidClose"]),
-        "completed": True,
-    }
 
 
 if __name__ == "__main__":
