@@ -137,10 +137,10 @@ class TelegramConfirmationTests(unittest.TestCase):
         with patch.object(service, "send_html", return_value=True) as send_html:
             self.assertTrue(service.send_event(event))
         text = send_html.call_args.args[0]
-        self.assertIn("same candle period, but their prices differ", text)
-        self.assertIn("Twelve Data is guiding the BUY decision", text)
-        self.assertIn("informational discrepancy alert", text)
-        self.assertIn("does not request a decision, decline, or invalidate the setup", text)
+        self.assertIn("same completed candle, but their OHLC values differ beyond tolerance", text)
+        self.assertIn("Twelve Data remains the strategy feed", text)
+        self.assertIn("This is informational only", text)
+        self.assertIn("No user decision is required", text)
         self.assertNotIn("If unanswered", text)
         self.assertNotIn("declined", text.lower())
         self.assertEqual(len(send_html.call_args.args), 1)

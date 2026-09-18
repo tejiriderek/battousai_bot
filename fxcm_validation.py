@@ -153,13 +153,15 @@ class FXCMValidationStore:
                 continue
             self._ohlc_event_signatures[key] = signature
             if self._event_recorder:
-                severity, response = _difference_severity(maximum_difference)
+                severity = _difference_severity(maximum_difference)
                 self._event_recorder(
                     {
                         "type": "fxcm_conflict",
                         "warning_type": "fxcm_conflict",
                         "severity": severity,
-                        "review_response": response,
+                        "informational": True,
+                        "strategy_action": "CONTINUE",
+                        "setup_action": "NONE",
                         "pair": pair,
                         "timeframe": timeframe,
                         "fields": result.get("mismatch_fields", []),
@@ -168,7 +170,7 @@ class FXCMValidationStore:
                         "twelve_data": result.get("twelve_data"),
                         "fxcm": result.get("fxcm"),
                         "maximum_difference_pips": maximum_difference,
-                        "requires_review": True,
+                        "requires_review": False,
                         "direction": primary_pair.get("direction"),
                         "state": primary_pair.get("state"),
                         "setup_id": primary_pair.get("setup_id"),
@@ -179,12 +181,12 @@ class FXCMValidationStore:
                 )
 
 
-def _difference_severity(maximum_difference_pips: float) -> tuple[str, str]:
+def _difference_severity(maximum_difference_pips: float) -> str:
     if maximum_difference_pips >= config.FXCM_HIGH_ALERT_PIPS:
-        return "HIGH", "DECLINE"
+        return "HIGH"
     if maximum_difference_pips >= config.FXCM_MEDIUM_ALERT_PIPS:
-        return "MEDIUM", "APPROVE"
-    return "LOW", "APPROVE"
+        return "MEDIUM"
+    return "LOW"
 
 
 def _near_active_setup_level(
@@ -288,7 +290,17 @@ def _compare_timeframes(
         left = fxcm.get(timeframe)
         right = primary.get(timeframe)
         if not left or not right:
-            result[timeframe] = {"status": "UNAVAILABLE"}
+            result[timeframe] = {
+                "status": "UNAVAILABLE",
+                "informational": True,
+                "strategy_action": "CONTINUE",
+                "setup_action": "NONE",
+                "comparison_performed": False,
+                "availability": {
+                    "fxcm": "AVAILABLE" if left else "MISSING",
+                    "twelve_data": "AVAILABLE" if right else "MISSING",
+                },
+            }
             continue
         periods = _period_comparison(left, right, timeframe)
         log.info(
@@ -300,7 +312,10 @@ def _compare_timeframes(
         )
         if periods["status"] != "SAME_PERIOD":
             result[timeframe] = {
-                "status": "BOUNDARY_MISMATCH",
+                "status": "CANDLE_BOUNDARY_MISMATCH",
+                "informational": True,
+                "strategy_action": "CONTINUE",
+                "setup_action": "NONE",
                 "period_status": periods["status"],
                 "tolerance_pips": config.FXCM_OHLC_TOLERANCE_PIPS,
                 "timestamp_difference_seconds": _timestamp_difference_seconds(

@@ -93,7 +93,7 @@ class FXCMValidationTests(unittest.TestCase):
                 "H4": None,
             }
             comparison = _compare_timeframes("EURUSD", base, self.primary["market_data"]["EURUSD"])
-            self.assertEqual(comparison["D1"]["status"], "BOUNDARY_MISMATCH")
+            self.assertEqual(comparison["D1"]["status"], "CANDLE_BOUNDARY_MISMATCH")
             self.assertEqual(comparison["D1"]["period_status"], "DIFFERENT_PERIOD")
             self.assertEqual(comparison["D1"]["timestamp_difference_seconds"], 75600)
             self.assertEqual(comparison["D1"]["normalized_timestamp_difference_seconds"], 0)
@@ -103,13 +103,13 @@ class FXCMValidationTests(unittest.TestCase):
             comparison = _compare_timeframes(
                 "EURUSD", {"D1": warn}, self.primary["market_data"]["EURUSD"]
             )
-            self.assertEqual(comparison["D1"]["status"], "BOUNDARY_MISMATCH")
+            self.assertEqual(comparison["D1"]["status"], "CANDLE_BOUNDARY_MISMATCH")
 
             mismatch = {**base["D1"], "open": 1.091}
             comparison = _compare_timeframes(
                 "EURUSD", {"D1": mismatch}, self.primary["market_data"]["EURUSD"]
             )
-            self.assertEqual(comparison["D1"]["status"], "BOUNDARY_MISMATCH")
+            self.assertEqual(comparison["D1"]["status"], "CANDLE_BOUNDARY_MISMATCH")
 
             same_period = {**base["D1"], "timestamp": "2026-09-16T00:00:00+00:00", "high": 1.11025}
             comparison = _compare_timeframes(
@@ -209,6 +209,11 @@ class FXCMValidationTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["type"], "fxcm_conflict")
         self.assertEqual(events[0]["severity"], "HIGH")
+        self.assertTrue(events[0]["informational"])
+        self.assertFalse(events[0]["requires_review"])
+        self.assertEqual(events[0]["strategy_action"], "CONTINUE")
+        self.assertEqual(events[0]["setup_action"], "NONE")
+        self.assertNotIn("review_response", events[0])
 
 
 if __name__ == "__main__":

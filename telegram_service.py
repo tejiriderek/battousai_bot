@@ -453,10 +453,12 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
         )
     table = _html("\n".join(rows))
     repeated = event.get("repeated_observations")
-    is_review = bool(
-        event.get("requires_review")
-        or event.get("maximum_difference_pips") is not None
-        or repeated
+    is_review = bool(event.get("requires_review"))
+    is_informational = bool(
+        event.get("informational")
+        or event.get("setup_action") == "NONE"
+        or (event.get("maximum_difference_pips") is not None and not is_review)
+        or (event.get("repeated_observations") and not is_review)
     )
     if is_review:
         direction = str(event.get("direction") or "the current direction").replace("BULLISH", "BUY").replace("BEARISH", "SELL")
@@ -466,10 +468,14 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
             "The two feeds may not agree on whether the level was truly broken or respected.\n"
             "This is an informational discrepancy alert; the strategy setup continues using Twelve Data."
         )
-        decision = (
-            "This notice appears once for the current discrepancy. "
-            "It does not request a decision, decline, or invalidate the setup."
+        decision = ""
+    elif is_informational:
+        explanation = (
+            "The providers are comparing the same completed candle, but their OHLC values differ beyond tolerance.\n"
+            "FXCM is broker/reference data; Twelve Data remains the strategy feed.\n"
+            "This is informational only. No user decision is required, and the setup state remains unchanged."
         )
+        decision = ""
     else:
         explanation = "These are the actual candles received from both providers for comparison."
         decision = ""
@@ -482,7 +488,7 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
     else:
         severity_line = ""
     timing_line = ""
-    heading = "FXCM DATA NOTICE" if is_review else "FXCM OHLC MISMATCH"
+    heading = "FXCM DATA NOTICE" if is_review or is_informational else "FXCM OHLC MISMATCH"
     return (
         f"<b>{heading}: {pair} {timeframe}</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
