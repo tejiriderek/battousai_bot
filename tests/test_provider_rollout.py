@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import main
+from telegram_service import _format_provider_divergence
 
 
 def candles(count: int = 40) -> list[dict]:
@@ -125,6 +126,47 @@ class ProviderRolloutTests(unittest.TestCase):
             )
 
         self.assertEqual(source, "twelve_data")
+
+    def test_shadow_insufficient_history_is_explicit(self):
+        main._shadow_status.clear()
+        with patch("config.STRATEGY_SHADOW_MODE", True):
+            main._run_shadow_comparison(
+                "EURUSD",
+                "fxcm",
+                {"pairs": {"EURUSD": {"history": {"D1": candles(1), "H4": candles(1)}}}},
+                {},
+                self.daily,
+                self.h4,
+                None,
+            )
+
+        self.assertEqual(main._shadow_status["EURUSD"]["status"], "INSUFFICIENT_HISTORY")
+        self.assertEqual(
+            main._shadow_status["EURUSD"]["shadow_history_counts"], {"D1": 1, "H4": 1}
+        )
+
+    def test_strategy_divergence_message_is_plain_english(self):
+        text = _format_provider_divergence(
+            {
+                "pair": "EURUSD",
+                "strategy": {
+                    "live_provider": "twelve_data",
+                    "live_state": "H4_WAITING",
+                    "live_direction": "BEARISH",
+                    "live_daily_level": 1.159,
+                    "live_h4_level": 1.15274,
+                    "shadow_provider": "fxcm",
+                    "shadow_state": "WATCHING",
+                    "shadow_daily_level": 1.158,
+                    "shadow_h4_level": None,
+                    "status": "STATE_DIVERGENCE",
+                },
+            }
+        )
+
+        self.assertIn("SHADOW DIVERGENCE", text)
+        self.assertIn("STATE_DIVERGENCE", text)
+        self.assertIn("no live setup state or alert was changed", text)
 
 
 if __name__ == "__main__":

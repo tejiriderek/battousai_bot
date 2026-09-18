@@ -36,6 +36,8 @@ class FXCMValidationStore:
         self._last_error: str | None = None
         self._pairs: dict[str, dict[str, Any]] = {}
         self._ohlc_event_signatures: dict[tuple[str, str], tuple[Any, ...]] = {}
+        self._ohlc_warn_counts: dict[tuple[str, str], int] = {}
+        self._candle_alert_sent_at: dict[str, float] = {}
 
     def enabled(self) -> bool:
         return config.FXCM_BRIDGE_ENABLED
@@ -149,12 +151,21 @@ class FXCMValidationStore:
             differences = result.get("ohlc_difference_pips") or {}
             maximum_difference = max((float(value) for value in differences.values()), default=0.0)
             if maximum_difference < config.FXCM_LOW_ALERT_PIPS:
+                self._ohlc_warn_counts.pop(key, None)
                 continue
             if self._ohlc_event_signatures.get(key) == signature:
                 continue
             if not _near_active_setup_level(pair, result, primary_pair):
                 continue
             self._ohlc_event_signatures[key] = signature
+            status = result.get("status")
+            if status == "WARN":
+                self._ohlc_warn_counts[key] = self._ohlc_warn_counts.get(key, 0) + 1
+                if self._ohlc_warn_counts[key] < 3:
+                    continue
+            if time.time() - self._candle_alert_sent_at.get(pair, 0) < config.STRATEGY_DIVERGENCE_RATE_LIMIT_SECONDS:
+                continue
+            self._candle_alert_sent_at[pair] = time.time()
             if self._event_recorder:
                 severity = _difference_severity(maximum_difference)
                 self._event_recorder(

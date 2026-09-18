@@ -69,6 +69,7 @@ _shadow_states = _ShadowStateManager()
 _shadow_strategy = StrategyEngine(_shadow_states)
 _shadow_reports: dict[str, tuple] = {}
 _shadow_status: dict[str, dict] = {}
+_strategy_divergence_sent_at: dict[str, float] = {}
 
 
 def _record_fxcm_event(event: dict) -> None:
@@ -265,10 +266,8 @@ def _scan_once() -> None:
                     )
                 ),
             )
-            if live_source == "twelve_data":
-                shadow_source = _provider_for_pair(pair)
-            else:
-                shadow_source = "twelve_data"
+            result = _strategy.evaluate(pair, strategy_daily, strategy_h4)
+            shadow_source = "fxcm" if not pair.endswith("USDT") else "binance"
             _run_shadow_comparison(
                 pair,
                 shadow_source,
@@ -276,8 +275,8 @@ def _scan_once() -> None:
                 crypto_snapshot,
                 daily,
                 h4,
+                result,
             )
-            result = _strategy.evaluate(pair, strategy_daily, strategy_h4)
             if result and result.alert:
                 sent = _telegram.send_alert(result)
                 log.info(
@@ -399,6 +398,36 @@ def _provider_for_pair(pair: str) -> str:
     return "fxcm"
 
 
+def _provider_history_counts(
+    source: str, pair: str, fxcm_snapshot: dict, crypto_snapshot: dict
+) -> dict[str, int]:
+    if source == "fxcm":
+        data = (fxcm_snapshot.get("pairs") or {}).get(pair, {})
+    elif source == "binance":
+        data = (crypto_snapshot.get(source) or {}).get("symbols", {}).get(pair, {})
+    else:
+        return {"D1": 0, "H4": 0}
+    history = data.get("history") or {}
+    return {timeframe: len(history.get(timeframe) or []) for timeframe in ("D1", "H4")}
+
+
+def _level_drift_exceeds(pair: str, shadow_state: dict, live_state: dict) -> bool:
+    tolerance = (
+        config.LEVEL_DRIFT_TOLERANCE_CRYPTO_POINTS
+        if pair.endswith("USDT")
+        else config.LEVEL_DRIFT_TOLERANCE_FOREX_PIPS * config.pip_size(pair)
+    )
+    for field in ("daily_level_price", "h4_level_price"):
+        shadow_level = shadow_state.get(field)
+        live_level = live_state.get(field)
+        if shadow_level is None or live_level is None:
+            if shadow_level != live_level:
+                return True
+        elif abs(float(shadow_level) - float(live_level)) > tolerance:
+            return True
+    return False
+
+
 def _select_strategy_frames(
     pair: str,
     twelve_daily: pd.DataFrame,
@@ -436,26 +465,56 @@ def _run_shadow_comparison(
     crypto_snapshot: dict,
     twelve_daily: pd.DataFrame,
     twelve_h4: pd.DataFrame,
+    live_result=None,
 ) -> None:
     if not config.STRATEGY_SHADOW_MODE:
         return
-    if shadow_source == "twelve_data":
+    history_counts = _provider_history_counts(
+        shadow_source, pair, fxcm_snapshot, crypto_snapshot
+    )
+    if min(history_counts.values()) < config.MIN_CANDLES:
+        shadow_result = None
+    elif shadow_source == "twelve_data":
         frames = (twelve_daily, twelve_h4)
+        shadow_result = _shadow_strategy.evaluate(pair, frames[0], frames[1])
     else:
         frames = _provider_frames(shadow_source, pair, fxcm_snapshot, crypto_snapshot)
         if frames is None:
-            return
-    shadow_result = _shadow_strategy.evaluate(pair, frames[0], frames[1])
+            shadow_result = None
+        else:
+            shadow_result = _shadow_strategy.evaluate(pair, frames[0], frames[1])
     shadow_state = _shadow_states.get(pair)
     live_state = _states.get(pair)
+    live_alert = bool(live_result and live_result.alert)
+    shadow_alert = bool(shadow_result and shadow_result.alert)
+    if min(history_counts.values()) < config.MIN_CANDLES:
+        status = "INSUFFICIENT_HISTORY"
+    elif shadow_state.get("state") != live_state.get("state"):
+        status = "STATE_DIVERGENCE"
+    elif shadow_alert != live_alert:
+        status = "ALERT_DIVERGENCE"
+    elif _level_drift_exceeds(pair, shadow_state, live_state):
+        status = "LEVEL_DRIFT"
+    else:
+        status = "MATCH"
     _shadow_status[pair] = {
+        "shadow_provider": shadow_source,
         "source": shadow_source,
+        "shadow_history_counts": history_counts,
+        "history_counts": history_counts,
+        "shadow_state": shadow_state.get("state"),
         "state": shadow_state.get("state"),
+        "shadow_direction": shadow_state.get("direction"),
         "direction": shadow_state.get("direction"),
+        "shadow_daily_level_price": shadow_state.get("daily_level_price"),
         "daily_level_price": shadow_state.get("daily_level_price"),
+        "shadow_h4_level_price": shadow_state.get("h4_level_price"),
         "h4_level_price": shadow_state.get("h4_level_price"),
+        "shadow_last_reset_reason": shadow_state.get("last_reset_reason"),
         "last_reset_reason": shadow_state.get("last_reset_reason"),
-        "alert": bool(shadow_result and shadow_result.alert),
+        "shadow_alert": shadow_alert,
+        "alert": shadow_alert,
+        "status": status,
     }
     signature = (
         shadow_source,
@@ -481,6 +540,30 @@ def _run_shadow_comparison(
             shadow_state.get("last_reset_reason"),
             bool(shadow_result and shadow_result.alert),
         )
+    if status in {"LEVEL_DRIFT", "STATE_DIVERGENCE", "ALERT_DIVERGENCE"}:
+        now = time.time()
+        if now - _strategy_divergence_sent_at.get(pair, 0) >= config.STRATEGY_DIVERGENCE_RATE_LIMIT_SECONDS:
+            _strategy_divergence_sent_at[pair] = now
+            _states.record_event(
+                {
+                    "type": "provider_divergence",
+                    "pair": pair,
+                    "timeframe": "D1/H4",
+                    "strategy": {
+                        "live_provider": live_state.get("strategy_provider", "twelve_data"),
+                        "live_state": live_state.get("state"),
+                        "live_direction": live_state.get("direction"),
+                        "live_daily_level": live_state.get("daily_level_price"),
+                        "live_h4_level": live_state.get("h4_level_price"),
+                        "shadow_provider": shadow_source,
+                        "shadow_state": shadow_state.get("state"),
+                        "shadow_direction": shadow_state.get("direction"),
+                        "shadow_daily_level": shadow_state.get("daily_level_price"),
+                        "shadow_h4_level": shadow_state.get("h4_level_price"),
+                        "status": status,
+                    },
+                }
+            )
 
 
 def _handle_crypto_provider_status(source: str, connected: bool, error: str | None) -> None:
@@ -699,6 +782,10 @@ def _status_snapshot() -> dict:
     snapshot["strategy_rollout"] = {
         "forex_primary_requested": config.FOREX_STRATEGY_PRIMARY_PROVIDER,
         "crypto_primary_requested": config.CRYPTO_STRATEGY_PRIMARY_PROVIDER,
+        "shadow_mode": config.STRATEGY_SHADOW_MODE,
+        "shadow": deepcopy(_shadow_status),
+    }
+    snapshot["shadow"] = {
         "shadow_mode": config.STRATEGY_SHADOW_MODE,
         "shadow": deepcopy(_shadow_status),
     }

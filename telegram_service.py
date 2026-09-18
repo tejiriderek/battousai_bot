@@ -55,6 +55,8 @@ class TelegramService:
 
     def send_event(self, event: dict[str, Any]) -> bool:
         event_type = event.get("type")
+        if event_type == "provider_divergence":
+            return self.send_html(_format_provider_divergence(event))
         if event_type == "fxcm_conflict":
             return self.send_html(_format_fxcm_ohlc_mismatch(event))
         if event_type == "fxcm_ohlc_mismatch":
@@ -502,6 +504,34 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
         f"Fields: {_html(', '.join(str(field) for field in fields))}\n"
         f"Tolerance: {_html(str(event.get('tolerance_pips', 'null')))} pips\n"
         "Provider values are the actual candles used for comparison."
+    )
+
+
+def _format_provider_divergence(event: dict[str, Any]) -> str:
+    strategy = event.get("strategy") or {}
+    status = str(strategy.get("status") or "UNKNOWN")
+    title = "SHADOW DIVERGENCE"
+    icon = "🔍"
+    meaning = {
+        "LEVEL_DRIFT": "The two feeds found different structural levels, so review the level context.",
+        "STATE_DIVERGENCE": "The two feeds moved through different strategy stages.",
+        "ALERT_DIVERGENCE": "One feed produced an alert while the other did not.",
+    }.get(status, "The shadow strategy result differs from the live strategy result.")
+    live_levels = f"{strategy.get('live_daily_level', 'N/A')} / {strategy.get('live_h4_level', 'N/A')}"
+    shadow_levels = f"{strategy.get('shadow_daily_level', 'N/A')} / {strategy.get('shadow_h4_level', 'N/A')}"
+    return (
+        f"<b>{icon} {title} - {_html(str(event.get('pair') or 'UNKNOWN'))}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Live ({_html(str(strategy.get('live_provider') or 'unknown'))}): "
+        f"{_html(str(strategy.get('live_state') or 'UNKNOWN'))} "
+        f"{_html(str(strategy.get('live_direction') or 'N/A'))} | levels { _html(live_levels) }\n"
+        f"Shadow ({_html(str(strategy.get('shadow_provider') or 'unknown'))}): "
+        f"{_html(str(strategy.get('shadow_state') or 'INSUFFICIENT_HISTORY'))} | levels { _html(shadow_levels) }\n"
+        f"Type: {_html(status)}\n"
+        f"Meaning: {_html(meaning)}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Net: Twelve Data remains the live strategy feed; this is a read-only comparison.\n"
+        "Action: none - no live setup state or alert was changed."
     )
 
 
