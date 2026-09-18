@@ -301,10 +301,20 @@ def _scan_once() -> None:
             _send_pending_events()
         except DataServiceError as exc:
             log.warning("%s data error: %s", pair, exc)
+            log.warning(
+                "%s strategy provider Twelve Data returned incomplete or missing candles",
+                pair,
+            )
+            _record_unavailable_shadow(pair)
             if "HTTP 429" in str(exc) or "credit/limit error" in str(exc):
                 log.warning("Rate limit detected; stopping this scan cycle")
                 return
         except Exception:
+            log.warning(
+                "%s strategy provider Twelve Data response unavailable for this scan",
+                pair,
+            )
+            _record_unavailable_shadow(pair)
             log.exception("Unhandled error scanning %s", pair)
     _send_pending_events()
 
@@ -315,6 +325,27 @@ def _send_pending_events() -> None:
             _telegram.send_event(event)
         except Exception:
             log.exception("Unable to deliver Telegram event: %s", event.get("type"))
+
+
+def _record_unavailable_shadow(pair: str) -> None:
+    source = "fxcm" if not pair.endswith("USDT") else "binance"
+    entry = {
+        "shadow_provider": source,
+        "shadow_history_counts": {"D1": 0, "H4": 0},
+        "shadow_state": None,
+        "shadow_direction": None,
+        "shadow_daily_level_price": None,
+        "shadow_h4_level_price": None,
+        "shadow_last_reset_reason": None,
+        "shadow_alert": None,
+        "status": "INSUFFICIENT_HISTORY",
+    }
+    _shadow_status[pair] = entry
+    log.info(
+        "SHADOW_COMPARE pair=%s source=%s status=INSUFFICIENT_HISTORY history_counts={D1:0,H4:0}",
+        pair,
+        source,
+    )
 
 
 def _record_twelve_market_data(pair: str, daily, h4) -> None:
@@ -359,6 +390,8 @@ def _provider_frames(
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     if source == "fxcm":
         symbol_data = (fxcm_snapshot.get("pairs") or {}).get(pair, {})
+        if symbol_data.get("stale"):
+            return None
     elif source == "binance":
         source_snapshot = crypto_snapshot.get("binance") or {}
         if not source_snapshot.get("connected") or source_snapshot.get("stale"):
@@ -472,22 +505,25 @@ def _run_shadow_comparison(
     history_counts = _provider_history_counts(
         shadow_source, pair, fxcm_snapshot, crypto_snapshot
     )
+    shadow_frames = None
     if min(history_counts.values()) < config.MIN_CANDLES:
         shadow_result = None
     elif shadow_source == "twelve_data":
         frames = (twelve_daily, twelve_h4)
+        shadow_frames = frames
         shadow_result = _shadow_strategy.evaluate(pair, frames[0], frames[1])
     else:
-        frames = _provider_frames(shadow_source, pair, fxcm_snapshot, crypto_snapshot)
-        if frames is None:
+        shadow_frames = _provider_frames(shadow_source, pair, fxcm_snapshot, crypto_snapshot)
+        if shadow_frames is None:
             shadow_result = None
         else:
-            shadow_result = _shadow_strategy.evaluate(pair, frames[0], frames[1])
+            shadow_result = _shadow_strategy.evaluate(pair, shadow_frames[0], shadow_frames[1])
     shadow_state = _shadow_states.get(pair)
     live_state = _states.get(pair)
     live_alert = bool(live_result and live_result.alert)
     shadow_alert = bool(shadow_result and shadow_result.alert)
-    if min(history_counts.values()) < config.MIN_CANDLES:
+    shadow_ran = shadow_frames is not None
+    if not shadow_ran:
         status = "INSUFFICIENT_HISTORY"
     elif shadow_state.get("state") != live_state.get("state"):
         status = "STATE_DIVERGENCE"
@@ -499,21 +535,13 @@ def _run_shadow_comparison(
         status = "MATCH"
     _shadow_status[pair] = {
         "shadow_provider": shadow_source,
-        "source": shadow_source,
         "shadow_history_counts": history_counts,
-        "history_counts": history_counts,
-        "shadow_state": shadow_state.get("state"),
-        "state": shadow_state.get("state"),
-        "shadow_direction": shadow_state.get("direction"),
-        "direction": shadow_state.get("direction"),
-        "shadow_daily_level_price": shadow_state.get("daily_level_price"),
-        "daily_level_price": shadow_state.get("daily_level_price"),
-        "shadow_h4_level_price": shadow_state.get("h4_level_price"),
-        "h4_level_price": shadow_state.get("h4_level_price"),
-        "shadow_last_reset_reason": shadow_state.get("last_reset_reason"),
-        "last_reset_reason": shadow_state.get("last_reset_reason"),
-        "shadow_alert": shadow_alert,
-        "alert": shadow_alert,
+        "shadow_state": shadow_state.get("state") if shadow_ran else None,
+        "shadow_direction": shadow_state.get("direction") if shadow_ran else None,
+        "shadow_daily_level_price": shadow_state.get("daily_level_price") if shadow_ran else None,
+        "shadow_h4_level_price": shadow_state.get("h4_level_price") if shadow_ran else None,
+        "shadow_last_reset_reason": shadow_state.get("last_reset_reason") if shadow_ran else None,
+        "shadow_alert": shadow_alert if shadow_ran else None,
         "status": status,
     }
     signature = (
@@ -522,23 +550,27 @@ def _run_shadow_comparison(
         shadow_state.get("direction"),
         shadow_state.get("daily_level_price"),
         shadow_state.get("h4_level_price"),
-        shadow_state.get("last_reset_reason"),
+        status,
+        tuple(history_counts.items()),
     )
     if config.STRATEGY_SHADOW_LOG and _shadow_reports.get(pair) != signature:
         _shadow_reports[pair] = signature
         log.info(
-            "SHADOW_COMPARE pair=%s source=%s live_state=%s shadow_state=%s "
-            "live_levels=(%s,%s) shadow_levels=(%s,%s) shadow_reset=%s alert=%s",
+            "SHADOW_COMPARE pair=%s source=%s status=%s history_counts=%s "
+            "live_state=%s shadow_state=%s live_levels=(%s,%s) "
+            "shadow_levels=(%s,%s) shadow_reset=%s alert=%s",
             pair,
             shadow_source,
+            status,
+            history_counts,
             live_state.get("state"),
-            shadow_state.get("state"),
+            shadow_state.get("state") if shadow_ran else None,
             live_state.get("daily_level_price"),
             live_state.get("h4_level_price"),
             shadow_state.get("daily_level_price"),
             shadow_state.get("h4_level_price"),
-            shadow_state.get("last_reset_reason"),
-            bool(shadow_result and shadow_result.alert),
+            shadow_state.get("last_reset_reason") if shadow_ran else None,
+            shadow_alert if shadow_ran else None,
         )
     if status in {"LEVEL_DRIFT", "STATE_DIVERGENCE", "ALERT_DIVERGENCE"}:
         now = time.time()
@@ -782,13 +814,9 @@ def _status_snapshot() -> dict:
     snapshot["strategy_rollout"] = {
         "forex_primary_requested": config.FOREX_STRATEGY_PRIMARY_PROVIDER,
         "crypto_primary_requested": config.CRYPTO_STRATEGY_PRIMARY_PROVIDER,
-        "shadow_mode": config.STRATEGY_SHADOW_MODE,
-        "shadow": deepcopy(_shadow_status),
     }
-    snapshot["shadow"] = {
-        "shadow_mode": config.STRATEGY_SHADOW_MODE,
-        "shadow": deepcopy(_shadow_status),
-    }
+    snapshot["shadow_mode"] = config.STRATEGY_SHADOW_MODE
+    snapshot["shadow"] = deepcopy(_shadow_status)
     return snapshot
 
 

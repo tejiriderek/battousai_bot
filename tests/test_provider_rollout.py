@@ -144,6 +144,9 @@ class ProviderRolloutTests(unittest.TestCase):
         self.assertEqual(
             main._shadow_status["EURUSD"]["shadow_history_counts"], {"D1": 1, "H4": 1}
         )
+        self.assertIsNone(main._shadow_status["EURUSD"]["shadow_state"])
+        self.assertNotIn("state", main._shadow_status["EURUSD"])
+        self.assertNotIn("source", main._shadow_status["EURUSD"])
 
     def test_strategy_divergence_message_is_plain_english(self):
         text = _format_provider_divergence(
