@@ -227,9 +227,11 @@ def _scan_once() -> None:
     if not config.TWELVE_DATA_API_KEY:
         log.error("TWELVE_DATA_API_KEY is empty; skipping cycle")
         return
+    processed_pairs: set[str] = set()
     for pair in config.PAIRS:
         if not _running.is_set():
             return
+        processed_pairs.add(pair)
         try:
             daily = _client.fetch_ohlc(pair, "D1")
             h4 = _client.fetch_ohlc(pair, "H4")
@@ -308,6 +310,9 @@ def _scan_once() -> None:
             _record_unavailable_shadow(pair)
             if "HTTP 429" in str(exc) or "credit/limit error" in str(exc):
                 log.warning("Rate limit detected; stopping this scan cycle")
+                for remaining_pair in config.PAIRS:
+                    if remaining_pair not in processed_pairs:
+                        _record_unavailable_shadow(remaining_pair)
                 return
         except Exception:
             log.warning(

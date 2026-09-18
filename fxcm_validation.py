@@ -120,6 +120,9 @@ class FXCMValidationStore:
                     config.FXCM_MAX_PRICE_DISCREPANCY_PCT,
                     ohlc_comparison,
                 ),
+                "validation_reason": _validation_reason(
+                    age, price_difference_pct, ohlc_comparison
+                ),
             }
         return {
             "enabled": config.FXCM_BRIDGE_ENABLED,
@@ -483,7 +486,26 @@ def _validation_status(
         return "OHLC_WARNING"
     if difference is None:
         return "NO_PRIMARY"
-    return "PRICE_WARNING" if difference > threshold else "OK"
+    return "SPOT_PRICE_DRIFT" if difference > threshold else "OK"
+
+
+def _validation_reason(
+    age: float | None,
+    difference: float | None,
+    ohlc_comparison: dict[str, Any],
+) -> str:
+    if age is None or age > config.FXCM_STALE_SECONDS:
+        return "FXCM live data is stale."
+    statuses = {result.get("status") for result in ohlc_comparison.values()}
+    if "MISMATCH" in statuses:
+        return "A same-period OHLC mismatch was detected."
+    if "WARN" in statuses:
+        return "A same-period OHLC warning was detected."
+    if difference is not None and difference > config.FXCM_MAX_PRICE_DISCREPANCY_PCT:
+        return "Only the live spot price differs beyond the configured threshold; OHLC is not mismatched."
+    if difference is None:
+        return "No Twelve Data spot price is available for comparison."
+    return "Live spot price and comparable OHLC data are within configured thresholds."
 
 
 def _percent_difference(left: Any, right: Any) -> float | None:
