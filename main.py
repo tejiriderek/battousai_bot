@@ -382,9 +382,13 @@ def _select_strategy_frames(
     fxcm_snapshot: dict,
     crypto_snapshot: dict,
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
-    requested = config.STRATEGY_PRIMARY_PROVIDER
+    requested = (
+        config.CRYPTO_STRATEGY_PRIMARY_PROVIDER
+        if pair.endswith("USDT")
+        else config.FOREX_STRATEGY_PRIMARY_PROVIDER
+    )
     if requested not in {"twelve_data", "fxcm", "binance"}:
-        log.warning("Unknown STRATEGY_PRIMARY_PROVIDER=%s; using Twelve Data", requested)
+        log.warning("Unknown strategy provider %s for %s; using Twelve Data", requested, pair)
         requested = "twelve_data"
     if requested == "twelve_data":
         return twelve_daily, twelve_h4, "twelve_data"
@@ -669,7 +673,8 @@ def _status_snapshot() -> dict:
     snapshot["crypto_validation"] = _crypto_validation.snapshot()
     snapshot["fxcm_validation"] = fxcm_snapshot
     snapshot["strategy_rollout"] = {
-        "live_primary_requested": config.STRATEGY_PRIMARY_PROVIDER,
+        "forex_primary_requested": config.FOREX_STRATEGY_PRIMARY_PROVIDER,
+        "crypto_primary_requested": config.CRYPTO_STRATEGY_PRIMARY_PROVIDER,
         "shadow_mode": config.STRATEGY_SHADOW_MODE,
         "shadow": deepcopy(_shadow_status),
     }

@@ -34,7 +34,7 @@ class ProviderRolloutTests(unittest.TestCase):
         self.h4 = self.daily.copy()
 
     def test_incomplete_primary_history_falls_back_to_twelve_data(self):
-        with patch("config.STRATEGY_PRIMARY_PROVIDER", "fxcm"):
+        with patch("config.FOREX_STRATEGY_PRIMARY_PROVIDER", "fxcm"):
             selected_daily, selected_h4, source = main._select_strategy_frames(
                 "EURUSD",
                 self.daily,
@@ -69,7 +69,7 @@ class ProviderRolloutTests(unittest.TestCase):
                 "EURUSD": {"history": {"D1": candles(), "H4": candles()}}
             }
         }
-        with patch("config.STRATEGY_PRIMARY_PROVIDER", "fxcm"):
+        with patch("config.FOREX_STRATEGY_PRIMARY_PROVIDER", "fxcm"):
             _, _, source = main._select_strategy_frames(
                 "EURUSD", self.daily, self.h4, snapshot, {}
             )
@@ -77,12 +77,38 @@ class ProviderRolloutTests(unittest.TestCase):
         self.assertEqual(source, "fxcm")
 
     def test_default_rollout_keeps_twelve_data_live(self):
-        with patch("config.STRATEGY_PRIMARY_PROVIDER", "twelve_data"):
+        with patch("config.CRYPTO_STRATEGY_PRIMARY_PROVIDER", "twelve_data"):
             _, _, source = main._select_strategy_frames(
                 "BTCUSDT", self.daily, self.h4, {}, {}
             )
 
         self.assertEqual(source, "twelve_data")
+
+    def test_forex_and_crypto_can_select_different_primaries(self):
+        forex_snapshot = {
+            "pairs": {
+                "EURUSD": {"history": {"D1": candles(), "H4": candles()}}
+            }
+        }
+        crypto_snapshot = {
+            "binance": {
+                "symbols": {
+                    "BTCUSDT": {"history": {"D1": candles(), "H4": candles()}}
+                }
+            }
+        }
+        with patch("config.FOREX_STRATEGY_PRIMARY_PROVIDER", "fxcm"), patch(
+            "config.CRYPTO_STRATEGY_PRIMARY_PROVIDER", "binance"
+        ):
+            _, _, forex_source = main._select_strategy_frames(
+                "EURUSD", self.daily, self.h4, forex_snapshot, {}
+            )
+            _, _, crypto_source = main._select_strategy_frames(
+                "BTCUSDT", self.daily, self.h4, {}, crypto_snapshot
+            )
+
+        self.assertEqual(forex_source, "fxcm")
+        self.assertEqual(crypto_source, "binance")
 
 
 if __name__ == "__main__":
