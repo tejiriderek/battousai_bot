@@ -329,6 +329,23 @@ class StateManager:
             )
             return True
 
+        if warning_type == "fxcm_conflict":
+            self.update(pair, warning_acknowledged=True)
+            self.record_event(
+                {
+                    "type": "warning_decision",
+                    "pair": pair,
+                    "setup_id": setup_id,
+                    "warning_type": warning_type,
+                    "decision": decision,
+                    "resulting_state": current.get("state"),
+                    "override_applied": False,
+                    "informational_only": True,
+                    "at": _now(),
+                }
+            )
+            return True
+
         if warning_type in {"retest", "second_chance"}:
             self.update(pair, **{f"{warning_type}_allowed": False, "warning_acknowledged": True})
             self.record_event(

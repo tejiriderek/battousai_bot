@@ -56,10 +56,7 @@ class TelegramService:
     def send_event(self, event: dict[str, Any]) -> bool:
         event_type = event.get("type")
         if event_type == "fxcm_conflict":
-            markup = _decision_markup("fxcm_conflict", str(event["pair"]), str(event["setup_id"]))
-            if self.state_manager:
-                self.state_manager.record_warning_sent(str(event["pair"]), "fxcm_conflict")
-            return self.send_html(_format_fxcm_ohlc_mismatch(event), markup)
+            return self.send_html(_format_fxcm_ohlc_mismatch(event))
         if event_type == "fxcm_ohlc_mismatch":
             return self.send_html(_format_fxcm_ohlc_mismatch(event))
         if event_type == "setup_invalidated":
@@ -293,8 +290,12 @@ def format_alert(result: ScanResult, validation: dict[str, Any] | None = None) -
     if validation:
         text += "\n━━━━━━━━━━━━━━━━━━\n<b>DATA SOURCE COMPARISON</b>\n"
         if result.pair.endswith("USDT"):
-            text += _format_validation_provider("binance", validation.get("binance"), result.pair)
-            text += _format_validation_provider("coinbase", validation.get("coinbase"), result.pair)
+            text += _format_validation_provider(
+                "binance", validation.get("binance"), result.pair, validation
+            )
+            text += _format_validation_provider(
+                "coinbase", validation.get("coinbase"), result.pair, validation
+            )
             text += _format_twelve_data_primary(validation, result.pair)
         else:
             text += _format_fxcm_validation(validation.get("fxcm_validation"), result.pair)
@@ -302,7 +303,12 @@ def format_alert(result: ScanResult, validation: dict[str, Any] | None = None) -
     return text
 
 
-def _format_validation_provider(source: str, details: dict[str, Any] | None, pair: str) -> str:
+def _format_validation_provider(
+    source: str,
+    details: dict[str, Any] | None,
+    pair: str,
+    validation: dict[str, Any] | None = None,
+) -> str:
     if not details or not details.get("enabled"):
         return f"<b>{source.title()}:</b> 🔴 DISABLED\n"
     if not details.get("connected") or details.get("stale"):
@@ -321,6 +327,13 @@ def _format_validation_provider(source: str, details: dict[str, Any] | None, pai
     lines = [f"<b>{source.title()}:</b> 🟢 CONNECTED"]
     if price:
         lines.append(f"  Price: <code>{price}</code>")
+
+    discrepancy = _crypto_discrepancy_percent(source, details, pair, validation)
+    if discrepancy is not None:
+        severity = _crypto_discrepancy_severity(source, discrepancy)
+        lines.append(
+            f"  Discrepancy: <b>{severity}</b> ({discrepancy:.2f}% maximum)"
+        )
     
     # Add OHLC data if available
     d1 = ohlc.get("D1")
@@ -331,6 +344,46 @@ def _format_validation_provider(source: str, details: dict[str, Any] | None, pai
         lines.append(f"  H4: O={h4.get('open')} H={h4.get('high')} L={h4.get('low')} C={h4.get('close')}")
     
     return "\n".join(lines) + "\n"
+
+
+def _crypto_discrepancy_percent(
+    source: str,
+    details: dict[str, Any],
+    pair: str,
+    validation: dict[str, Any] | None,
+) -> float | None:
+    symbol = "BTC-USD" if source == "coinbase" and pair == "BTCUSDT" else pair
+    if source == "coinbase" and pair == "ETHUSDT":
+        symbol = "ETH-USD"
+    symbol_data = details.get("symbols", {}).get(symbol, {})
+    values: list[float] = []
+    price_difference = symbol_data.get("price_difference_pct")
+    if price_difference is not None:
+        values.append(abs(float(price_difference)))
+
+    primary = (validation or {}).get("market_data", {}).get(pair, {})
+    for timeframe, comparison in (symbol_data.get("ohlc_comparison") or {}).items():
+        primary_candle = primary.get(timeframe) or {}
+        if comparison.get("status") != "COMPARED":
+            continue
+        for field, difference in (comparison.get("ohlc_difference") or {}).items():
+            primary_value = primary_candle.get(field)
+            if primary_value:
+                values.append(abs(float(difference)) / abs(float(primary_value)) * 100)
+    return max(values) if values else None
+
+
+def _crypto_discrepancy_severity(source: str, discrepancy: float) -> str:
+    threshold = (
+        config.CRYPTO_BINANCE_MAX_PRICE_DISCREPANCY_PCT
+        if source == "binance"
+        else config.CRYPTO_COINBASE_MAX_PRICE_DISCREPANCY_PCT
+    )
+    if discrepancy >= threshold * 3:
+        return "HIGH"
+    if discrepancy >= threshold * 2:
+        return "MEDIUM"
+    return "LOW"
 
 
 def _format_fxcm_validation(details: dict[str, Any] | None, pair: str) -> str:
@@ -411,9 +464,9 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
             "The two providers are looking at the same candle period, but their prices differ.\n"
             f"Twelve Data is guiding the {direction} decision, but FXCM is the broker reference.\n"
             "The two feeds may not agree on whether the level was truly broken or respected.\n"
-            "Because this setup is near an entry or invalidation level, please review the chart before continuing."
+            "This is an informational discrepancy alert; the strategy setup continues using Twelve Data."
         )
-        decision = "Choose YES to continue using Twelve Data, or NO to skip this setup."
+        decision = "Review the provider values below; strategy invalidation still requires a price-action rule."
     else:
         explanation = "These are the actual candles received from both providers for comparison."
         decision = ""

@@ -31,6 +31,18 @@ class StateManagerDecisionTests(unittest.TestCase):
             restored = StateManager(path)
             self.assertEqual(restored.get("GBPUSD")["last_reset_reason"], "user_ended_news")
 
+    def test_fxcm_conflict_no_does_not_end_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            states = StateManager(Path(directory) / "state.json")
+            states.update("NZDCAD", state="H4_WAITING", setup_id="setup-3")
+
+            self.assertTrue(
+                states.apply_warning_decision("NZDCAD", "setup-3", "fxcm_conflict", "no")
+            )
+            current = states.get("NZDCAD")
+            self.assertEqual(current["state"], "H4_WAITING")
+            self.assertIsNone(current["last_reset_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

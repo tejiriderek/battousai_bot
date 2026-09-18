@@ -4,7 +4,7 @@ from unittest.mock import patch
 import config
 import main
 from state_manager import StateManager
-from telegram_service import TelegramService
+from telegram_service import TelegramService, _format_validation_provider
 
 
 class TelegramConfirmationTests(unittest.TestCase):
@@ -119,7 +119,7 @@ class TelegramConfirmationTests(unittest.TestCase):
         self.assertIn("TwelveData", text)
         self.assertIn("FXCM", text)
 
-    def test_fxcm_conflict_explains_risk_and_requests_confirmation(self):
+    def test_fxcm_conflict_is_informational_and_has_no_confirmation(self):
         service = TelegramService()
         event = {
             "type": "fxcm_conflict",
@@ -137,12 +137,49 @@ class TelegramConfirmationTests(unittest.TestCase):
         with patch.object(service, "send_html", return_value=True) as send_html:
             self.assertTrue(service.send_event(event))
         text = send_html.call_args.args[0]
-        markup = send_html.call_args.args[1]
         self.assertIn("same candle period, but their prices differ", text)
         self.assertIn("Twelve Data is guiding the BUY decision", text)
-        self.assertIn("review the chart before continuing", text)
-        self.assertIn("YES to continue using Twelve Data", text)
-        self.assertIn("NO - SKIP SETUP", markup["inline_keyboard"][0][1]["text"])
+        self.assertIn("informational discrepancy alert", text)
+        self.assertIn("strategy invalidation still requires a price-action rule", text)
+        self.assertEqual(len(send_html.call_args.args), 1)
+
+    def test_crypto_provider_discrepancy_is_labeled_without_controls(self):
+        validation = {
+            "market_data": {
+                "BTCUSDT": {
+                    "H4": {
+                        "open": 100000,
+                        "high": 101000,
+                        "low": 99000,
+                        "close": 100000,
+                    }
+                }
+            }
+        }
+        provider = {
+            "enabled": True,
+            "connected": True,
+            "stale": False,
+            "symbols": {
+                "BTCUSDT": {
+                    "price": 104000,
+                    "price_difference_pct": 4.0,
+                    "ohlc": {"H4": None},
+                    "ohlc_comparison": {
+                        "H4": {
+                            "status": "COMPARED",
+                            "ohlc_difference": {"close": 4000},
+                        }
+                    },
+                }
+            },
+        }
+
+        text = _format_validation_provider("binance", provider, "BTCUSDT", validation)
+
+        self.assertIn("Discrepancy: <b>HIGH</b>", text)
+        self.assertNotIn("YES", text)
+        self.assertNotIn("NO", text)
 
 
 if __name__ == "__main__":

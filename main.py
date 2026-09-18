@@ -51,7 +51,7 @@ def _record_fxcm_event(event: dict) -> None:
         _states.update(
             pair,
             warning_type="fxcm_conflict",
-            warning_acknowledged=False,
+            warning_acknowledged=True,
             fxcm_conflict_details=event,
         )
 
