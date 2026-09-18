@@ -65,6 +65,7 @@ class FXCMValidationStore:
                     "bid": _optional_float(raw.get("bid")),
                     "ask": _optional_float(raw.get("ask")),
                     "ohlc": _normalize_ohlc(raw.get("ohlc")),
+                    "history": _normalize_history(raw.get("history"), raw.get("ohlc")),
                 }
                 accepted[pair] = record
             except (TypeError, ValueError):
@@ -234,6 +235,49 @@ def _normalize_ohlc(value: Any) -> dict[str, dict[str, Any] | None]:
             "completed": bool(candle.get("completed", True)),
         }
     return result
+
+
+def _normalize_history(
+    value: Any, fallback_ohlc: Any = None
+) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {"D1": [], "H4": []}
+    if isinstance(value, dict):
+        for timeframe in result:
+            candles = value.get(timeframe)
+            if not isinstance(candles, list):
+                continue
+            for candle in candles:
+                normalized = _normalize_candle(candle)
+                if normalized:
+                    result[timeframe].append(normalized)
+    if not any(result.values()) and isinstance(fallback_ohlc, dict):
+        for timeframe in result:
+            normalized = _normalize_candle(fallback_ohlc.get(timeframe))
+            if normalized:
+                result[timeframe].append(normalized)
+    return result
+
+
+def _normalize_candle(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    required = ("timestamp", "open", "high", "low", "close")
+    if any(field not in value for field in required):
+        return None
+    try:
+        timestamp = _normalize_timestamp(value["timestamp"])
+        if not timestamp:
+            return None
+        return {
+            "timestamp": timestamp,
+            "open": float(value["open"]),
+            "high": float(value["high"]),
+            "low": float(value["low"]),
+            "close": float(value["close"]),
+            "completed": bool(value.get("completed", True)),
+        }
+    except (TypeError, ValueError):
+        return None
 
 
 def _compare_timeframes(

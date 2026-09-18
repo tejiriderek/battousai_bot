@@ -104,6 +104,10 @@ def collect_snapshot(session) -> dict:
                 row = instrument_rows.iloc[-1]
                 bid = float(row['bid'])
                 ask = float(row['ask'])
+                history = {
+                    timeframe: get_history_candles(session, instrument, timeframe)
+                    for timeframe in ("D1", "H4")
+                }
                 
                 pairs[pair] = {
                     "price": (bid + ask) / 2,
@@ -111,9 +115,10 @@ def collect_snapshot(session) -> dict:
                     "ask": ask,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "ohlc": {
-                        "D1": get_history_candle(session, instrument, 'D1'),
-                        "H4": get_history_candle(session, instrument, 'H4'),
+                        timeframe: candles[-1] if candles else None
+                        for timeframe, candles in history.items()
                     },
+                    "history": history,
                 }
             except Exception as e:
                 log.warning("Failed to get data for %s: %s", pair, e)
@@ -125,18 +130,23 @@ def collect_snapshot(session) -> dict:
 
 
 def get_history_candle(session, instrument: str, timeframe: str) -> dict | None:
+    candles = get_history_candles(session, instrument, timeframe)
+    return candles[-1] if candles else None
+
+
+def get_history_candles(session, instrument: str, timeframe: str) -> list[dict]:
     try:
         import pandas as pd
 
         period = timeframe if timeframe in {"D1", "H4"} else "D1"
         now = datetime.now(timezone.utc)
-        start = now - timedelta(days=10 if period == "D1" else 3)
+        start = now - timedelta(days=100 if period == "D1" else 20)
         try:
             history = session.get_history(instrument, period, start, now)
         except AttributeError:
             from forexconnect import LiveHistoryCreator
 
-            history = LiveHistoryCreator.create(session).get_history(instrument, period, 3)
+            history = LiveHistoryCreator.create(session).get_history(instrument, period, 100)
         if history is None or len(history) == 0:
             return None
 
@@ -160,26 +170,28 @@ def get_history_candle(session, instrument: str, timeframe: str) -> dict | None:
                 parsed = parsed.tz_localize("UTC")
             if parsed is not None and parsed.to_pydatetime() + duration.to_pytimedelta() <= now:
                 completed.append((parsed, row))
-        if not completed:
-            return None
-        candle_time, candle = completed[-1]
-        open_value = value(candle, ("BidOpen", "Open", "open"))
-        high_value = value(candle, ("BidHigh", "High", "high"))
-        low_value = value(candle, ("BidLow", "Low", "low"))
-        close_value = value(candle, ("BidClose", "Close", "close"))
-        if any(value is None for value in (open_value, high_value, low_value, close_value)):
-            values = list(candle.values)
-            if len(values) < 5:
-                return None
-            open_value, high_value, low_value, close_value = values[1:5]
-        return {
-            "timestamp": candle_time.isoformat(),
-            "open": float(open_value),
-            "high": float(high_value),
-            "low": float(low_value),
-            "close": float(close_value),
-            "completed": True,
-        }
+        result = []
+        for candle_time, candle in completed:
+            open_value = value(candle, ("BidOpen", "Open", "open"))
+            high_value = value(candle, ("BidHigh", "High", "high"))
+            low_value = value(candle, ("BidLow", "Low", "low"))
+            close_value = value(candle, ("BidClose", "Close", "close"))
+            if any(value is None for value in (open_value, high_value, low_value, close_value)):
+                values = list(candle.values)
+                if len(values) < 5:
+                    continue
+                open_value, high_value, low_value, close_value = values[1:5]
+            result.append(
+                {
+                    "timestamp": candle_time.isoformat(),
+                    "open": float(open_value),
+                    "high": float(high_value),
+                    "low": float(low_value),
+                    "close": float(close_value),
+                    "completed": True,
+                }
+            )
+        return result
     except Exception as e:
         log.warning("Failed to get history for %s %s: %s", instrument, timeframe, e)
         return None

@@ -7,16 +7,18 @@ import math
 import sys
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import uvicorn
+import pandas as pd
 
 import config
 from data_service import DataServiceError, TwelveDataClient
 from economic_calendar import EconomicCalendarService
 from fxcm_validation import FXCMValidationStore
 from crypto_validation import CryptoValidationService
-from state_manager import StateManager
+from state_manager import EMPTY_PAIR, StateManager
 from strategy import StrategyEngine
 from telegram_service import TelegramService
 from tradingview_email import TradingViewAlert, TradingViewEmailBridge
@@ -35,6 +37,38 @@ _calendar = EconomicCalendarService()
 _strategy = StrategyEngine(_states, _calendar)
 _twelve_market_lock = threading.Lock()
 _twelve_market_data: dict[str, dict] = {}
+
+
+class _ShadowStateManager:
+    def __init__(self) -> None:
+        self._pairs = {pair: deepcopy(EMPTY_PAIR) for pair in config.PAIRS}
+
+    def get(self, pair: str) -> dict:
+        return deepcopy(self._pairs.setdefault(pair, deepcopy(EMPTY_PAIR)))
+
+    def update(self, pair: str, **changes):
+        row = self._pairs.setdefault(pair, deepcopy(EMPTY_PAIR))
+        row.update(changes)
+        return deepcopy(row)
+
+    def reset(self, pair: str, reason: str, details=None, **preserved):
+        current = self.get(pair)
+        reset = deepcopy(EMPTY_PAIR)
+        reset.update({key: current.get(key) for key in ("last_alert_key", "last_alert_at")})
+        reset.update(preserved)
+        reset["last_reset_reason"] = reason
+        reset["last_reset_details"] = details or {}
+        self._pairs[pair] = reset
+        return deepcopy(reset)
+
+    def record_event(self, event: dict) -> None:
+        return None
+
+
+_shadow_states = _ShadowStateManager()
+_shadow_strategy = StrategyEngine(_shadow_states)
+_shadow_reports: dict[str, tuple] = {}
+_shadow_status: dict[str, dict] = {}
 
 
 def _record_fxcm_event(event: dict) -> None:
@@ -205,8 +239,24 @@ def _scan_once() -> None:
                     last_twelve_data_price=float(h4.iloc[-1]["close"]),
                     last_twelve_data_at=datetime.now(timezone.utc).isoformat(),
                 )
-            _fxcm_validation.snapshot()
-            result = _strategy.evaluate(pair, daily, h4)
+            fxcm_snapshot = _fxcm_validation.snapshot()
+            crypto_snapshot = _crypto_validation.snapshot()
+            strategy_daily, strategy_h4, live_source = _select_strategy_frames(
+                pair, daily, h4, fxcm_snapshot, crypto_snapshot
+            )
+            if live_source == "twelve_data":
+                shadow_source = _provider_for_pair(pair)
+            else:
+                shadow_source = "twelve_data"
+            _run_shadow_comparison(
+                pair,
+                shadow_source,
+                fxcm_snapshot,
+                crypto_snapshot,
+                daily,
+                h4,
+            )
+            result = _strategy.evaluate(pair, strategy_daily, strategy_h4)
             if result and result.alert:
                 sent = _telegram.send_alert(result)
                 log.info(
@@ -279,6 +329,130 @@ def _primary_snapshot() -> dict:
             pair: dict(timeframes) for pair, timeframes in _twelve_market_data.items()
         }
     return snapshot
+
+
+def _provider_frames(
+    source: str,
+    pair: str,
+    fxcm_snapshot: dict,
+    crypto_snapshot: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    if source == "fxcm":
+        symbol_data = (fxcm_snapshot.get("pairs") or {}).get(pair, {})
+    elif source == "binance":
+        symbol_data = (crypto_snapshot.get("binance") or {}).get("symbols", {}).get(pair, {})
+    else:
+        return None
+    histories = symbol_data.get("history") or {}
+    frames = []
+    for timeframe in ("D1", "H4"):
+        candles = histories.get(timeframe) or []
+        if len(candles) < config.MIN_CANDLES:
+            return None
+        frame = pd.DataFrame(candles)
+        frame["datetime"] = _normalize_provider_datetimes(
+            source, timeframe, frame["timestamp"]
+        )
+        frame = frame.rename(columns={"timestamp": "source_timestamp"})
+        frame = frame.sort_values("datetime").reset_index(drop=True)
+        frames.append(frame)
+    return frames[0], frames[1]
+
+
+def _normalize_provider_datetimes(
+    source: str, timeframe: str, values: pd.Series
+) -> pd.Series:
+    timestamps = pd.to_datetime(values, utc=True)
+    if source in {"binance", "coinbase"}:
+        return timestamps.dt.floor("D" if timeframe == "D1" else "4h")
+    # FXCM's D1 bars use the broker's session boundary; preserve that boundary.
+    return timestamps
+
+
+def _provider_for_pair(pair: str) -> str:
+    if pair.endswith("USDT"):
+        return "binance"
+    return "fxcm"
+
+
+def _select_strategy_frames(
+    pair: str,
+    twelve_daily: pd.DataFrame,
+    twelve_h4: pd.DataFrame,
+    fxcm_snapshot: dict,
+    crypto_snapshot: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    requested = config.STRATEGY_PRIMARY_PROVIDER
+    if requested not in {"twelve_data", "fxcm", "binance"}:
+        log.warning("Unknown STRATEGY_PRIMARY_PROVIDER=%s; using Twelve Data", requested)
+        requested = "twelve_data"
+    if requested == "twelve_data":
+        return twelve_daily, twelve_h4, "twelve_data"
+    if requested != _provider_for_pair(pair):
+        return twelve_daily, twelve_h4, "twelve_data"
+    provider_frames = _provider_frames(requested, pair, fxcm_snapshot, crypto_snapshot)
+    if provider_frames is None:
+        log.warning(
+            "%s primary %s history unavailable or incomplete; falling back to Twelve Data",
+            pair,
+            requested,
+        )
+        return twelve_daily, twelve_h4, "twelve_data"
+    return provider_frames[0], provider_frames[1], requested
+
+
+def _run_shadow_comparison(
+    pair: str,
+    shadow_source: str,
+    fxcm_snapshot: dict,
+    crypto_snapshot: dict,
+    twelve_daily: pd.DataFrame,
+    twelve_h4: pd.DataFrame,
+) -> None:
+    if not config.STRATEGY_SHADOW_MODE:
+        return
+    if shadow_source == "twelve_data":
+        frames = (twelve_daily, twelve_h4)
+    else:
+        frames = _provider_frames(shadow_source, pair, fxcm_snapshot, crypto_snapshot)
+        if frames is None:
+            return
+    shadow_result = _shadow_strategy.evaluate(pair, frames[0], frames[1])
+    shadow_state = _shadow_states.get(pair)
+    live_state = _states.get(pair)
+    _shadow_status[pair] = {
+        "source": shadow_source,
+        "state": shadow_state.get("state"),
+        "direction": shadow_state.get("direction"),
+        "daily_level_price": shadow_state.get("daily_level_price"),
+        "h4_level_price": shadow_state.get("h4_level_price"),
+        "last_reset_reason": shadow_state.get("last_reset_reason"),
+        "alert": bool(shadow_result and shadow_result.alert),
+    }
+    signature = (
+        shadow_source,
+        shadow_state.get("state"),
+        shadow_state.get("direction"),
+        shadow_state.get("daily_level_price"),
+        shadow_state.get("h4_level_price"),
+        shadow_state.get("last_reset_reason"),
+    )
+    if config.STRATEGY_SHADOW_LOG and _shadow_reports.get(pair) != signature:
+        _shadow_reports[pair] = signature
+        log.info(
+            "SHADOW_COMPARE pair=%s source=%s live_state=%s shadow_state=%s "
+            "live_levels=(%s,%s) shadow_levels=(%s,%s) shadow_reset=%s alert=%s",
+            pair,
+            shadow_source,
+            live_state.get("state"),
+            shadow_state.get("state"),
+            live_state.get("daily_level_price"),
+            live_state.get("h4_level_price"),
+            shadow_state.get("daily_level_price"),
+            shadow_state.get("h4_level_price"),
+            shadow_state.get("last_reset_reason"),
+            bool(shadow_result and shadow_result.alert),
+        )
 
 
 def _handle_crypto_provider_status(source: str, connected: bool, error: str | None) -> None:
@@ -494,6 +668,11 @@ def _status_snapshot() -> dict:
     snapshot = _primary_snapshot()
     snapshot["crypto_validation"] = _crypto_validation.snapshot()
     snapshot["fxcm_validation"] = fxcm_snapshot
+    snapshot["strategy_rollout"] = {
+        "live_primary_requested": config.STRATEGY_PRIMARY_PROVIDER,
+        "shadow_mode": config.STRATEGY_SHADOW_MODE,
+        "shadow": deepcopy(_shadow_status),
+    }
     return snapshot
 
 

@@ -38,6 +38,17 @@ TIMEFRAMES: dict[str, str] = {
 
 LOOKBACK_CANDLES = 80
 MIN_CANDLES = 40
+STRATEGY_PRIMARY_PROVIDER = os.getenv("STRATEGY_PRIMARY_PROVIDER", "twelve_data").strip().lower()
+STRATEGY_SHADOW_MODE = os.getenv("STRATEGY_SHADOW_MODE", "true").lower() in {
+    "true",
+    "1",
+    "yes",
+}
+STRATEGY_SHADOW_LOG = os.getenv("STRATEGY_SHADOW_LOG", "true").lower() in {
+    "true",
+    "1",
+    "yes",
+}
 PIVOT_LEFT = 3
 PIVOT_RIGHT = 3
 SHARP_ATR_MULT = 0.55

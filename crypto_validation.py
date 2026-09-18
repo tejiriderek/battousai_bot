@@ -55,6 +55,7 @@ class CryptoValidationService:
                         "price": None,
                         "timestamp": None,
                         "ohlc": {"D1": None, "H4": None},
+                        "history": {"D1": [], "H4": []},
                     }
                     for product in definition["symbols"].values()
                 },
@@ -256,14 +257,18 @@ class CryptoValidationService:
                 for timeframe, interval in (("D1", "1d"), ("H4", "4h")):
                     response = requests.get(
                         f"{config.CRYPTO_BINANCE_REST_URL}/api/v3/klines",
-                        params={"symbol": product, "interval": interval, "limit": 3},
+                        params={
+                            "symbol": product,
+                            "interval": interval,
+                            "limit": config.LOOKBACK_CANDLES,
+                        },
                         timeout=config.CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS,
                     )
                     response.raise_for_status()
                     rows = response.json()
-                    candle = _latest_completed_binance_candle(rows)
-                    if candle:
-                        self._record_ohlc(source, product, timeframe, candle)
+                    history = _completed_binance_candles(rows)
+                    if history:
+                        self._record_ohlc_history(source, product, timeframe, history)
             return
 
         granularity = {"D1": 86400, "H4": 3600}
@@ -271,18 +276,21 @@ class CryptoValidationService:
             for timeframe, seconds in granularity.items():
                 response = requests.get(
                     f"{config.CRYPTO_COINBASE_REST_URL}/products/{product}/candles",
-                    params={"granularity": seconds, "limit": 12 if timeframe == "H4" else 3},
+                    params={
+                        "granularity": seconds,
+                        "limit": min(300, config.LOOKBACK_CANDLES),
+                    },
                     timeout=config.CRYPTO_VALIDATION_HTTP_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
                 rows = response.json()
-                candle = (
-                    _latest_completed_coinbase_candle(rows, seconds)
+                history = (
+                    _completed_coinbase_candles(rows, seconds)
                     if timeframe == "D1"
-                    else _aggregate_coinbase_h4(rows)
+                    else _aggregate_coinbase_h4_history(rows)
                 )
-                if candle:
-                    self._record_ohlc(source, product, timeframe, candle)
+                if history:
+                    self._record_ohlc_history(source, product, timeframe, history)
 
     def _safe_refresh_ohlc(self, source: str) -> None:
         try:
@@ -296,6 +304,18 @@ class CryptoValidationService:
     ) -> None:
         with self._lock:
             self._status[source]["symbols"][product]["ohlc"][timeframe] = candle
+            self._status[source]["last_error"] = None
+
+    def _record_ohlc_history(
+        self,
+        source: str,
+        product: str,
+        timeframe: str,
+        history: list[dict[str, Any]],
+    ) -> None:
+        with self._lock:
+            self._status[source]["symbols"][product]["history"][timeframe] = history
+            self._status[source]["symbols"][product]["ohlc"][timeframe] = history[-1]
             self._status[source]["last_error"] = None
 
     def _set_connected(self, source: str, connected: bool, error: str | None = None) -> None:
@@ -357,6 +377,25 @@ def _latest_completed_binance_candle(rows: list[list[Any]]) -> dict[str, Any] | 
     }
 
 
+def _completed_binance_candles(rows: list[list[Any]]) -> list[dict[str, Any]]:
+    now_ms = int(time.time() * 1000)
+    completed = [row for row in rows if len(row) >= 7 and int(row[6]) <= now_ms]
+    result = []
+    for row in sorted(completed, key=lambda item: int(item[0])):
+        result.append(
+            {
+                "timestamp": datetime.fromtimestamp(int(row[0]) / 1000, timezone.utc).isoformat(),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+                "completed": True,
+            }
+        )
+    return result
+
+
 def _latest_completed_coinbase_candle(
     rows: list[list[Any]], granularity: int
 ) -> dict[str, Any] | None:
@@ -374,6 +413,27 @@ def _latest_completed_coinbase_candle(
         "volume": float(row[5]),
         "completed": True,
     }
+
+
+def _completed_coinbase_candles(
+    rows: list[list[Any]], granularity: int
+) -> list[dict[str, Any]]:
+    now = int(time.time())
+    completed = [row for row in rows if len(row) >= 6 and int(row[0]) + granularity <= now]
+    result = []
+    for row in sorted(completed, key=lambda item: int(item[0])):
+        result.append(
+            {
+                "timestamp": datetime.fromtimestamp(int(row[0]), timezone.utc).isoformat(),
+                "open": float(row[3]),
+                "high": float(row[2]),
+                "low": float(row[1]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+                "completed": True,
+            }
+        )
+    return result
 
 
 def _aggregate_coinbase_h4(rows: list[list[Any]]) -> dict[str, Any] | None:
@@ -403,6 +463,32 @@ def _aggregate_coinbase_h4(rows: list[list[Any]]) -> dict[str, Any] | None:
         "volume": sum(float(row[5]) for row in group),
         "completed": True,
     }
+
+
+def _aggregate_coinbase_h4_history(rows: list[list[Any]]) -> list[dict[str, Any]]:
+    now = int(time.time())
+    hours = [row for row in rows if len(row) >= 6 and int(row[0]) + 3600 <= now]
+    groups: dict[int, list[list[Any]]] = {}
+    for row in hours:
+        start = (int(row[0]) // 14400) * 14400
+        groups.setdefault(start, []).append(row)
+    result = []
+    for start, group in sorted(groups.items()):
+        if len(group) != 4:
+            continue
+        group.sort(key=lambda item: int(item[0]))
+        result.append(
+            {
+                "timestamp": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                "open": float(group[0][3]),
+                "high": max(float(row[2]) for row in group),
+                "low": min(float(row[1]) for row in group),
+                "close": float(group[-1][4]),
+                "volume": sum(float(row[5]) for row in group),
+                "completed": True,
+            }
+        )
+    return result
 
 
 def _compare_ohlc(
