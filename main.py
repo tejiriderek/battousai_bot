@@ -244,6 +244,27 @@ def _scan_once() -> None:
             strategy_daily, strategy_h4, live_source = _select_strategy_frames(
                 pair, daily, h4, fxcm_snapshot, crypto_snapshot
             )
+            _states.update(
+                pair,
+                strategy_provider=live_source,
+                strategy_provider_requested=(
+                    config.CRYPTO_STRATEGY_PRIMARY_PROVIDER
+                    if pair.endswith("USDT")
+                    else config.FOREX_STRATEGY_PRIMARY_PROVIDER
+                ),
+                strategy_history_counts={
+                    "D1": len(strategy_daily),
+                    "H4": len(strategy_h4),
+                },
+                strategy_fallback_used=(
+                    live_source
+                    != (
+                        config.CRYPTO_STRATEGY_PRIMARY_PROVIDER
+                        if pair.endswith("USDT")
+                        else config.FOREX_STRATEGY_PRIMARY_PROVIDER
+                    )
+                ),
+            )
             if live_source == "twelve_data":
                 shadow_source = _provider_for_pair(pair)
             else:
@@ -340,7 +361,10 @@ def _provider_frames(
     if source == "fxcm":
         symbol_data = (fxcm_snapshot.get("pairs") or {}).get(pair, {})
     elif source == "binance":
-        symbol_data = (crypto_snapshot.get("binance") or {}).get("symbols", {}).get(pair, {})
+        source_snapshot = crypto_snapshot.get("binance") or {}
+        if not source_snapshot.get("connected") or source_snapshot.get("stale"):
+            return None
+        symbol_data = source_snapshot.get("symbols", {}).get(pair, {})
     else:
         return None
     histories = symbol_data.get("history") or {}

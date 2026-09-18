@@ -50,6 +50,8 @@ class ProviderRolloutTests(unittest.TestCase):
     def test_complete_binance_history_is_normalized_for_crypto(self):
         snapshot = {
             "binance": {
+                "connected": True,
+                "stale": False,
                 "symbols": {
                     "BTCUSDT": {"history": {"D1": candles(), "H4": candles()}}
                 }
@@ -92,6 +94,8 @@ class ProviderRolloutTests(unittest.TestCase):
         }
         crypto_snapshot = {
             "binance": {
+                "connected": True,
+                "stale": False,
                 "symbols": {
                     "BTCUSDT": {"history": {"D1": candles(), "H4": candles()}}
                 }
@@ -109,6 +113,18 @@ class ProviderRolloutTests(unittest.TestCase):
 
         self.assertEqual(forex_source, "fxcm")
         self.assertEqual(crypto_source, "binance")
+
+    def test_stale_binance_falls_back_to_twelve_data(self):
+        with patch("config.CRYPTO_STRATEGY_PRIMARY_PROVIDER", "binance"):
+            _, _, source = main._select_strategy_frames(
+                "BTCUSDT",
+                self.daily,
+                self.h4,
+                {},
+                {"binance": {"connected": False, "stale": True, "symbols": {}}},
+            )
+
+        self.assertEqual(source, "twelve_data")
 
 
 if __name__ == "__main__":

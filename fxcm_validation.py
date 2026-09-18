@@ -113,7 +113,10 @@ class FXCMValidationStore:
                 "price_difference_pct": price_difference_pct,
                 "ohlc_comparison": ohlc_comparison,
                 "validation_status": _validation_status(
-                    age, price_difference_pct, config.FXCM_MAX_PRICE_DISCREPANCY_PCT
+                    age,
+                    price_difference_pct,
+                    config.FXCM_MAX_PRICE_DISCREPANCY_PCT,
+                    ohlc_comparison,
                 ),
             }
         return {
@@ -454,12 +457,22 @@ def _normalized_timestamp_difference_seconds(
     return int((left_timestamp - right_timestamp).total_seconds())
 
 
-def _validation_status(age: float | None, difference: float | None, threshold: float) -> str:
+def _validation_status(
+    age: float | None,
+    difference: float | None,
+    threshold: float,
+    ohlc_comparison: dict[str, Any] | None = None,
+) -> str:
     if age is None or age > config.FXCM_STALE_SECONDS:
         return "STALE"
+    statuses = {result.get("status") for result in (ohlc_comparison or {}).values()}
+    if "MISMATCH" in statuses:
+        return "OHLC_MISMATCH"
+    if "WARN" in statuses:
+        return "OHLC_WARNING"
     if difference is None:
         return "NO_PRIMARY"
-    return "WARNING" if difference > threshold else "OK"
+    return "PRICE_WARNING" if difference > threshold else "OK"
 
 
 def _percent_difference(left: Any, right: Any) -> float | None:

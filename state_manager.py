@@ -70,6 +70,10 @@ EMPTY_PAIR = {
     "fxcm_conflict_details": None,
     "retest_allowed": None,
     "second_chance_allowed": None,
+    "strategy_provider": "twelve_data",
+    "strategy_provider_requested": "twelve_data",
+    "strategy_history_counts": {"D1": 0, "H4": 0},
+    "strategy_fallback_used": False,
 }
 
 
