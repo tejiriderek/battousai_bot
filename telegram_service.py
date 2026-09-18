@@ -466,7 +466,10 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
             "The two feeds may not agree on whether the level was truly broken or respected.\n"
             "This is an informational discrepancy alert; the strategy setup continues using Twelve Data."
         )
-        decision = "Review the provider values below; strategy invalidation still requires a price-action rule."
+        decision = (
+            "This notice appears once for the current discrepancy. "
+            "It does not request a decision, decline, or invalidate the setup."
+        )
     else:
         explanation = "These are the actual candles received from both providers for comparison."
         decision = ""
@@ -478,15 +481,8 @@ def _format_fxcm_ohlc_mismatch(event: dict[str, Any]) -> str:
         )
     else:
         severity_line = ""
-    if severity == "LOW":
-        timing_line = "If unanswered, this review appears once more after 5 minutes, then the setup is approved automatically."
-    elif severity == "MEDIUM":
-        timing_line = "If unanswered, this review appears 3 more times every 5 minutes, then the setup is approved automatically."
-    elif severity == "HIGH":
-        timing_line = "If unanswered, this review appears 3 more times every 5 minutes, then this setup is declined."
-    else:
-        timing_line = ""
-    heading = "FXCM DATA REVIEW" if is_review else "FXCM OHLC MISMATCH"
+    timing_line = ""
+    heading = "FXCM DATA NOTICE" if is_review else "FXCM OHLC MISMATCH"
     return (
         f"<b>{heading}: {pair} {timeframe}</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"

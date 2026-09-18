@@ -103,7 +103,8 @@ def _check_warning_timeouts() -> None:
             warning_type = current.get("warning_type")
             setup_id = current.get("setup_id")
             if (
-                not warning_type
+                warning_type == "fxcm_conflict"
+                or not warning_type
                 or not setup_id
                 or current.get("state") == "WATCHING"
                 or current.get("warning_acknowledged")
@@ -116,28 +117,8 @@ def _check_warning_timeouts() -> None:
                 continue
 
             prompt_count = int(current.get("confirmation_prompt_count", 0))
-            if warning_type == "fxcm_conflict":
-                details = current.get("fxcm_conflict_details") or {}
-                severity = str(details.get("severity", "HIGH")).upper()
-                max_prompts = 2 if severity == "LOW" else 4
-            else:
-                max_prompts = config.CONFIRMATION_MAX_PROMPTS
+            max_prompts = config.CONFIRMATION_MAX_PROMPTS
             if prompt_count >= max_prompts:
-                if warning_type == "fxcm_conflict":
-                    decision = "no" if severity == "HIGH" else "yes"
-                    applied = _states.apply_warning_decision(
-                        pair, setup_id, warning_type, decision
-                    )
-                    if applied:
-                        _send_pending_events()
-                        log.info(
-                            "Auto-%s FXCM %s review for %s after %d prompts",
-                            "declined" if decision == "no" else "approved",
-                            severity,
-                            pair,
-                            prompt_count,
-                        )
-                    continue
                 applied = _states.apply_warning_decision(
                     pair, setup_id, warning_type, "yes"
                 )

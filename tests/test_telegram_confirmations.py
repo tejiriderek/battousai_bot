@@ -140,7 +140,9 @@ class TelegramConfirmationTests(unittest.TestCase):
         self.assertIn("same candle period, but their prices differ", text)
         self.assertIn("Twelve Data is guiding the BUY decision", text)
         self.assertIn("informational discrepancy alert", text)
-        self.assertIn("strategy invalidation still requires a price-action rule", text)
+        self.assertIn("does not request a decision, decline, or invalidate the setup", text)
+        self.assertNotIn("If unanswered", text)
+        self.assertNotIn("declined", text.lower())
         self.assertEqual(len(send_html.call_args.args), 1)
 
     def test_crypto_provider_discrepancy_is_labeled_without_controls(self):
